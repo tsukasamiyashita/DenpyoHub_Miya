@@ -20,6 +20,7 @@ import threading
 import zipfile
 import datetime
 import importlib
+import unicodedata
 import xml.etree.ElementTree as ET
 from collections import defaultdict, Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -282,6 +283,20 @@ def normalize_kanri_no(val) -> str:
         if prefix.lstrip("-").isdigit():
             s = prefix
     return s
+
+
+def normalize_search_text(val) -> str:
+    """
+    検索・フィルター照合用に文字列を正規化する。
+    NFKC正規化により、半角カナ（ﾎｯﾊﾟｰ等）と全角カナ（ホッパー等）、
+    全角英数記号（（株）サカタ等）と半角英数記号（(株)サカタ等）を同一視して検索しやすくする。
+    """
+    if val is None:
+        return ""
+    s = str(val).strip()
+    if not s:
+        return ""
+    return unicodedata.normalize("NFKC", s).lower()
 
 
 def to_float(val, default: float = 0.0) -> float:
@@ -1716,6 +1731,16 @@ class FileListDialog(tk.Toplevel):
         frame = ttk.Frame(self, style="Card.TFrame", padding=14)
         frame.pack(fill=tk.BOTH, expand=True)
 
+        btn_bar = ttk.Frame(frame, style="Card.TFrame")
+        btn_bar.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+
+        ttk.Button(btn_bar, text="ファイルを追加(複数選択可)", style="Primary.TButton", command=self._add_files).pack(side=tk.LEFT)
+        ttk.Button(btn_bar, text="選択行を削除", command=self._remove_selected).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btn_bar, text="すべてクリア", command=self._clear_all).pack(side=tk.LEFT)
+
+        ttk.Button(btn_bar, text="キャンセル", command=self.destroy).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(btn_bar, text="OK（反映）", style="Success.TButton", command=self._ok).pack(side=tk.RIGHT)
+
         ttk.Label(
             frame,
             text=f"{title_label}：複数ファイルを追加・管理できます（集計時に全ファイルが統合・合算されます）",
@@ -1723,10 +1748,10 @@ class FileListDialog(tk.Toplevel):
         ).pack(anchor=tk.W, pady=(0, 8))
 
         tv_frame = ttk.Frame(frame, style="Card.TFrame")
-        tv_frame.pack(fill=tk.BOTH, expand=True)
+        tv_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         cols = ("ファイル名", "更新日時", "状態", "フルパス")
-        self.tv = ttk.Treeview(tv_frame, columns=cols, show="headings", selectmode="extended")
+        self.tv = ttk.Treeview(tv_frame, columns=cols, show="headings", selectmode="extended", height=6)
         vsb = ttk.Scrollbar(tv_frame, orient=tk.VERTICAL, command=self.tv.yview)
         hsb = ttk.Scrollbar(tv_frame, orient=tk.HORIZONTAL, command=self.tv.xview)
         self.tv.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -1740,16 +1765,6 @@ class FileListDialog(tk.Toplevel):
         for c, w in zip(cols, widths):
             self.tv.heading(c, text=c)
             self.tv.column(c, width=w, minwidth=50, anchor=tk.W)
-
-        btn_bar = ttk.Frame(frame, style="Card.TFrame")
-        btn_bar.pack(fill=tk.X, pady=(10, 0))
-
-        ttk.Button(btn_bar, text="ファイルを追加(複数選択可)...", style="Primary.TButton", command=self._add_files).pack(side=tk.LEFT)
-        ttk.Button(btn_bar, text="選択行を削除", command=self._remove_selected).pack(side=tk.LEFT, padx=6)
-        ttk.Button(btn_bar, text="すべてクリア", command=self._clear_all).pack(side=tk.LEFT)
-
-        ttk.Button(btn_bar, text="キャンセル", command=self.destroy).pack(side=tk.RIGHT, padx=(6, 0))
-        ttk.Button(btn_bar, text="OK（反映）", style="Success.TButton", command=self._ok).pack(side=tk.RIGHT)
 
         self._refresh_list()
 
@@ -1828,6 +1843,11 @@ class ColumnOrderDialog(tk.Toplevel):
         frame = ttk.Frame(self, style="Card.TFrame", padding=14)
         frame.pack(fill=tk.BOTH, expand=True)
 
+        footer = ttk.Frame(frame, style="Card.TFrame")
+        footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(12, 0))
+        ttk.Button(footer, text="キャンセル", command=self.destroy).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(footer, text="保存して適用", style="Primary.TButton", command=self._ok).pack(side=tk.RIGHT)
+
         ttk.Label(frame, text="一覧に表示する列の順番と表示/非表示を設定します", style="Title.TLabel").pack(anchor=tk.W)
         ttk.Label(
             frame,
@@ -1836,12 +1856,12 @@ class ColumnOrderDialog(tk.Toplevel):
         ).pack(anchor=tk.W, pady=(2, 10))
 
         body = ttk.Frame(frame, style="Card.TFrame")
-        body.pack(fill=tk.BOTH, expand=True)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         tv_frame = ttk.Frame(body, style="Card.TFrame")
         tv_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.tv = ttk.Treeview(tv_frame, columns=("状態", "列名", "種別"), show="headings", selectmode="browse")
+        self.tv = ttk.Treeview(tv_frame, columns=("状態", "列名", "種別"), show="headings", selectmode="browse", height=8)
         vsb = ttk.Scrollbar(tv_frame, orient=tk.VERTICAL, command=self.tv.yview)
         self.tv.configure(yscrollcommand=vsb.set)
         self.tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -1867,11 +1887,6 @@ class ColumnOrderDialog(tk.Toplevel):
         ttk.Button(ctrl_col, text="すべて表示", width=14, command=self._show_all).pack(pady=3)
         ttk.Separator(ctrl_col, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
         ttk.Button(ctrl_col, text="デフォルト順に戻す", width=14, command=self._reset_default).pack(pady=3)
-
-        footer = ttk.Frame(frame, style="Card.TFrame")
-        footer.pack(fill=tk.X, pady=(12, 0))
-        ttk.Button(footer, text="キャンセル", command=self.destroy).pack(side=tk.RIGHT, padx=(6, 0))
-        ttk.Button(footer, text="保存して適用", style="Primary.TButton", command=self._ok).pack(side=tk.RIGHT)
 
         self._refresh(select_idx=0)
 
@@ -1937,10 +1952,11 @@ class ColumnOrderDialog(tk.Toplevel):
 
 class ExcelFilterPopup(tk.Toplevel):
     """
-    Excelのオートフィルタのような直感的な列フィルター＆ソートポップアップ
-    - 昇順 / 降順ソート
-    - 数値条件フィルター（数値列のみ）
-    - テキスト検索＋チェックボックスによる値選択（高速Treeview使用）
+    Excelのオートフィルタのような直感的かつ高速な列フィルター＆ソートポップアップ
+    - 下部アクションバー（OK/キャンセル/解除）を先に配置し、ボタン切れを完全防止
+    - 日本語IME変換確定のEnterキーで画面が勝手に閉じないよう制御
+    - 半角カナ/全角カナ・全角英数・カンマ有無・スペース区切り複数語に対応した検索
+    - 1万件超のユニーク値でも固まらないチャンク描画とドラッグ連続チェックに対応
     """
 
     def __init__(
@@ -1955,47 +1971,63 @@ class ExcelFilterPopup(tk.Toplevel):
         on_sort,
         on_apply_filter,
         on_clear_filter,
+        display_col_name: str = "",
     ):
         super().__init__(parent)
-        self.title(f"フィルター: {col_name}")
+        self.col_name = col_name
+        self.display_col_name = display_col_name or col_name
+        self.title(f"フィルター: {self.display_col_name}")
         self.configure(bg=COLORS["bg_card"])
         self.transient(parent)
         self.grab_set()
 
-        self.col_name = col_name
         self.is_numeric = is_numeric
         self.value_counts = value_counts
         self.on_sort = on_sort
         self.on_apply_filter = on_apply_filter
         self.on_clear_filter = on_clear_filter
 
-        # ウィンドウ位置とサイズ調整（画面外はみ出し防止）
-        w = 340
-        h = 510 if is_numeric else 450
+        self._search_after_id = None
+        self._chunk_after_id = None
+        self._render_token = 0
+        self._last_norm_kw = None
+        self._drag_check_target = None
+
+        # ウィンドウ位置とサイズ調整（画面外はみ出し・ボタン切れ防止）
+        w = 430
+        h = 560 if is_numeric else 500
+        self.minsize(390, 440)
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         px = min(max(10, x_root), max(10, sw - w - 20))
-        py = min(max(10, y_root), max(10, sh - h - 50))
+        py = min(max(10, y_root), max(10, sh - h - 60))
         self.geometry(f"{w}x{h}+{px}+{py}")
         self.resizable(True, True)
 
         main = ttk.Frame(self, style="Card.TFrame", padding=10)
         main.pack(fill=tk.BOTH, expand=True)
 
-        # ヘッダー＆ソートボタン
-        ttk.Label(main, text=f"列「{col_name}」の並べ替え・絞り込み", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 6))
+        # 1. 最下部フッターボタン（先に side=BOTTOM で配置し、どの解像度でも絶対に途切れないようにする）
+        footer = tk.Frame(main, bg=COLORS["bg_header"], padx=8, pady=6)
+        footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+        ttk.Button(footer, text="フィルター解除", command=self._do_clear).pack(side=tk.LEFT)
+        ttk.Button(footer, text="キャンセル", command=self.destroy).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(footer, text="OK（適用）", style="Primary.TButton", command=self._do_ok).pack(side=tk.RIGHT)
+
+        # 2. ヘッダー＆ソートボタン
+        ttk.Label(main, text=f"列「{self.display_col_name}」の並べ替え・絞り込み", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 5))
 
         sort_f = ttk.Frame(main, style="Card.TFrame")
         sort_f.pack(fill=tk.X, pady=(0, 6))
         ttk.Button(sort_f, text="↑ 昇順ソート", command=self._do_sort_asc).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
         ttk.Button(sort_f, text="↓ 降順ソート", command=self._do_sort_desc).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
 
-        ttk.Button(main, text="この列のフィルターを解除", command=self._do_clear).pack(fill=tk.X, pady=(0, 6))
-
-        # 数値条件フィルター（数値列の場合）
+        # 3. 数値条件フィルター（数値列の場合）
         self.num_op_var = tk.StringVar(value=(current_filter or {}).get("num_op", "指定なし"))
-        self.num_v1_var = tk.StringVar(value=str((current_filter or {}).get("num_v1", "")))
-        self.num_v2_var = tk.StringVar(value=str((current_filter or {}).get("num_v2", "")))
+        init_v1 = (current_filter or {}).get("num_v1")
+        init_v2 = (current_filter or {}).get("num_v2")
+        self.num_v1_var = tk.StringVar(value="" if init_v1 is None else str(init_v1))
+        self.num_v2_var = tk.StringVar(value="" if init_v2 is None else str(init_v2))
 
         if is_numeric:
             num_box = ttk.LabelFrame(main, text="数値条件フィルター", padding=(6, 4))
@@ -2013,27 +2045,39 @@ class ExcelFilterPopup(tk.Toplevel):
             op_cb.pack(side=tk.LEFT, padx=(0, 4))
             op_cb.bind("<<ComboboxSelected>>", lambda e: self._toggle_num_inputs())
 
-            self.ent_v1 = ttk.Entry(row1, textvariable=self.num_v1_var, width=8)
+            self.ent_v1 = ttk.Entry(row1, textvariable=self.num_v1_var, width=10)
             self.ent_v1.pack(side=tk.LEFT, padx=2)
+            self.ent_v1.bind("<Return>", lambda e: self._do_ok())
             self.lbl_tilde = ttk.Label(row1, text="～", style="Card.TLabel")
-            self.ent_v2 = ttk.Entry(row1, textvariable=self.num_v2_var, width=8)
+            self.ent_v2 = ttk.Entry(row1, textvariable=self.num_v2_var, width=10)
+            self.ent_v2.bind("<Return>", lambda e: self._do_ok())
             self._toggle_num_inputs()
 
-        # 検索ボックス
-        search_f = ttk.Frame(main, style="Card.TFrame")
-        search_f.pack(fill=tk.X, pady=(2, 4))
+        # 4. 値検索ボックス（IME変換確定Enterで閉じない安全設計＋ワンクリック検索操作）
+        search_box = ttk.LabelFrame(main, text="値リストから検索・選択（半角/全角・スペース区切り対応）", padding=(6, 4))
+        search_box.pack(fill=tk.X, pady=(0, 4))
+
+        search_f = ttk.Frame(search_box, style="Card.TFrame")
+        search_f.pack(fill=tk.X, pady=(0, 4))
         ttk.Label(search_f, text="検索:", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 4))
         self.search_var = tk.StringVar()
-        ent_s = ttk.Entry(search_f, textvariable=self.search_var)
-        ent_s.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ent_s.bind("<KeyRelease>", lambda e: self._rebuild_tree())
-        ent_s.focus_set()
+        self.ent_s = ttk.Entry(search_f, textvariable=self.search_var)
+        self.ent_s.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        self.ent_s.bind("<KeyRelease>", self._on_search_key_release)
+        self.ent_s.bind("<Return>", self._on_search_enter)
+        self.ent_s.bind("<Down>", self._on_search_arrow_down)
 
-        # すべて選択トグル
+        ttk.Button(search_f, text="クリア", width=6, command=self._clear_search_box).pack(side=tk.LEFT, padx=(0, 3))
+        ttk.Button(search_f, text="検索結果で即適用", style="Success.TButton", command=self._apply_search_matches_immediately).pack(side=tk.LEFT)
+
+        # クイック選択ボタン行
+        quick_row = ttk.Frame(search_box, style="Card.TFrame")
+        quick_row.pack(fill=tk.X)
+
         self.all_selected_var = tk.BooleanVar(value=True)
         chk_all = tk.Checkbutton(
-            main,
-            text="(すべて選択 / 検索結果を全選択)",
+            quick_row,
+            text="表示中を全選択",
             variable=self.all_selected_var,
             command=self._toggle_select_all,
             bg=COLORS["bg_card"],
@@ -2043,29 +2087,47 @@ class ExcelFilterPopup(tk.Toplevel):
             font=("Yu Gothic UI", 9, "bold"),
             anchor=tk.W,
         )
-        chk_all.pack(fill=tk.X, pady=(0, 2))
+        chk_all.pack(side=tk.LEFT)
 
-        # 値チェックリスト（高速Treeview）
+        ttk.Button(quick_row, text="表示中のみ選択", command=self._select_only_visible).pack(side=tk.RIGHT, padx=(3, 0))
+        ttk.Button(quick_row, text="全解除", width=7, command=self._uncheck_all_values).pack(side=tk.RIGHT, padx=(3, 0))
+        ttk.Button(quick_row, text="全選択", width=7, command=self._check_all_values).pack(side=tk.RIGHT)
+
+        # 件数ステータス表示
+        self.match_info_var = tk.StringVar(value="")
+        tk.Label(
+            main,
+            textvariable=self.match_info_var,
+            bg=COLORS["bg_card"],
+            fg=COLORS["accent"],
+            font=("Yu Gothic UI", 9, "bold"),
+            anchor=tk.W,
+        ).pack(fill=tk.X, pady=(0, 2))
+
+        # 5. 値チェックリスト（高速Treeview）
         tv_frame = ttk.Frame(main, style="Card.TFrame")
-        tv_frame.pack(fill=tk.BOTH, expand=True)
+        tv_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        self.tv = ttk.Treeview(tv_frame, columns=("chk", "val", "cnt"), show="headings", selectmode="browse")
+        self.tv = ttk.Treeview(tv_frame, columns=("chk", "val", "cnt"), show="headings", selectmode="browse", height=5)
         vsb = ttk.Scrollbar(tv_frame, orient=tk.VERTICAL, command=self.tv.yview)
         self.tv.configure(yscrollcommand=vsb.set)
         self.tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.tv.heading("chk", text="選択")
-        self.tv.heading("val", text="値")
+        self.tv.heading("val", text="値（クリック/ドラッグで切替）")
         self.tv.heading("cnt", text="件数")
-        self.tv.column("chk", width=44, anchor=tk.CENTER, stretch=False)
-        self.tv.column("val", width=190, anchor=tk.W)
-        self.tv.column("cnt", width=55, anchor=tk.E, stretch=False)
+        self.tv.column("chk", width=46, anchor=tk.CENTER, stretch=False)
+        self.tv.column("val", width=230, anchor=tk.E if is_numeric else tk.W)
+        self.tv.column("cnt", width=65, anchor=tk.E, stretch=False)
 
         self.tv.bind("<Button-1>", self._on_tv_click)
+        self.tv.bind("<B1-Motion>", self._on_tv_drag)
+        self.tv.bind("<ButtonRelease-1>", lambda e: setattr(self, "_drag_check_target", None))
         self.tv.bind("<space>", self._on_tv_space)
+        self.tv.bind("<Return>", lambda e: self._do_ok())
 
-        # 全ユニーク値のソート（数値列は数値順、それ以外は文字列順）
+        # 全ユニーク値のソートと検索用キャッシュの事前構築
         if is_numeric:
             self.all_values = sorted(
                 value_counts.keys(),
@@ -2074,23 +2136,29 @@ class ExcelFilterPopup(tk.Toplevel):
         else:
             self.all_values = sorted(value_counts.keys(), key=lambda v: (v == "", str(v)))
 
+        self._disp_cache = {}
+        self._norm_search_cache = {}
+        for v in self.all_values:
+            disp_s = self._format_display_val(v)
+            self._disp_cache[v] = disp_s
+            norm_s = normalize_search_text(disp_s)
+            norm_raw = normalize_search_text(v)
+            self._norm_search_cache[v] = f"{norm_s} {norm_raw} {norm_s.replace(',', '')}"
+
         selected_set = (current_filter or {}).get("selected")
         if selected_set is None:
             self.checked_map = {v: True for v in self.all_values}
+            self._initial_all_checked = True
         else:
             self.checked_map = {v: (v in selected_set) for v in self.all_values}
+            self._initial_all_checked = False
+        self._user_toggled_items = False
 
         self.visible_values = []
-        self._rebuild_tree()
-
-        # フッターボタン
-        footer = ttk.Frame(main, style="Card.TFrame")
-        footer.pack(fill=tk.X, pady=(8, 0))
-        ttk.Button(footer, text="キャンセル", command=self.destroy).pack(side=tk.RIGHT, padx=(6, 0))
-        ttk.Button(footer, text="OK（適用）", style="Primary.TButton", command=self._do_ok).pack(side=tk.RIGHT)
+        self._rebuild_tree(from_search_typing=False)
 
         self.bind("<Escape>", lambda e: self.destroy())
-        self.bind("<Return>", lambda e: self._do_ok())
+        self.ent_s.focus_set()
 
     def _toggle_num_inputs(self):
         if not self.is_numeric:
@@ -2109,33 +2177,209 @@ class ExcelFilterPopup(tk.Toplevel):
             self.lbl_tilde.pack_forget()
             self.ent_v2.pack_forget()
 
+    def _format_display_val(self, raw_v: str) -> str:
+        if raw_v == "":
+            return "(空白)"
+        if self.is_numeric:
+            try:
+                num = float(str(raw_v).replace(",", ""))
+                if abs(num - round(num)) < 1e-6:
+                    return f"{int(round(num)):,}"
+                return f"{num:,.2f}"
+            except ValueError:
+                pass
+        return raw_v
+
     def _display_val(self, raw_v: str) -> str:
-        return "(空白)" if raw_v == "" else raw_v
+        return self._disp_cache.get(raw_v) or self._format_display_val(raw_v)
 
-    def _rebuild_tree(self):
-        kw = self.search_var.get().strip().lower()
-        self.tv.delete(*self.tv.get_children())
-        self.visible_values = []
+    def _on_search_key_release(self, event=None):
+        """IME入力中も邪魔せずスムーズに候補を絞り込む（デバウンス付き）"""
+        if event is not None and event.keysym in (
+            "Return", "KP_Enter", "Escape", "Up", "Down", "Left", "Right",
+            "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Tab",
+        ):
+            return
+        norm_kw = normalize_search_text(self.search_var.get())
+        if norm_kw == self._last_norm_kw:
+            return
+        if self._search_after_id is not None:
+            try:
+                self.after_cancel(self._search_after_id)
+            except Exception:
+                pass
+            self._search_after_id = None
+        if event is None:
+            self._rebuild_tree(from_search_typing=True)
+        else:
+            self._search_after_id = self.after(50, lambda: self._rebuild_tree(from_search_typing=True))
+
+    def _on_search_enter(self, event=None):
+        """検索ボックスでのEnterキーはIME変換確定・検索更新のみ行い、ポップアップを閉じない"""
+        if self._search_after_id is not None:
+            try:
+                self.after_cancel(self._search_after_id)
+            except Exception:
+                pass
+            self._search_after_id = None
+        self._rebuild_tree(from_search_typing=True)
+        return "break"
+
+    def _on_search_arrow_down(self, event=None):
+        """検索ボックスで↓キーを押すと候補リストの先頭行へフォーカスを移す"""
+        children = self.tv.get_children()
+        if children:
+            self.tv.focus_set()
+            self.tv.selection_set(children[0])
+            self.tv.focus(children[0])
+            self.tv.see(children[0])
+        return "break"
+
+    def _clear_search_box(self):
+        self.search_var.set("")
+        self._rebuild_tree(from_search_typing=True)
+        self.ent_s.focus_set()
+
+    def _apply_search_matches_immediately(self):
+        """現在の検索結果（表示中の候補）のみを選択状態にして即座にフィルター適用する"""
+        if not self.visible_values:
+            messagebox.showinfo("該当なし", "検索キーワードに一致する値がありません。", parent=self)
+            return
+        vis_set = set(self.visible_values)
         for v in self.all_values:
-            disp = self._display_val(v)
-            if kw and kw not in disp.lower():
-                continue
-            self.visible_values.append(v)
+            self.checked_map[v] = (v in vis_set)
+        self._user_toggled_items = True
+        self._do_ok()
 
-        all_on = bool(self.visible_values)
-        for idx, v in enumerate(self.visible_values):
-            checked = self.checked_map.get(v, True)
-            if not checked:
-                all_on = False
-            mark = "☑" if checked else "☐"
-            self.tv.insert("", tk.END, iid=str(idx), values=(mark, self._display_val(v), f"{self.value_counts[v]:,}"))
-        self.all_selected_var.set(all_on)
+    def _update_match_info_label(self):
+        vis_cnt = len(self.visible_values)
+        total_cnt = len(self.all_values)
+        vis_checked = sum(1 for v in self.visible_values if self.checked_map.get(v, False))
+        total_checked = sum(1 for v in self.all_values if self.checked_map.get(v, False))
+        self.all_selected_var.set(vis_cnt > 0 and vis_checked == vis_cnt)
+        if vis_cnt < total_cnt:
+            self.match_info_var.set(f"検索一致: {vis_cnt:,}件 / 全{total_cnt:,}件  （選択中: 表示内 {vis_checked:,}件 / 全体 {total_checked:,}件）")
+        else:
+            self.match_info_var.set(f"全 {total_cnt:,}件  （チェック選択中: {total_checked:,}件）")
+
+    def _rebuild_tree(self, from_search_typing: bool = True):
+        self._search_after_id = None
+        if self._chunk_after_id is not None:
+            try:
+                self.after_cancel(self._chunk_after_id)
+            except Exception:
+                pass
+            self._chunk_after_id = None
+
+        norm_kw = normalize_search_text(self.search_var.get())
+        self._last_norm_kw = norm_kw
+        tokens = [t.replace(",", "") for t in norm_kw.split() if t]
+
+        if not tokens:
+            self.visible_values = list(self.all_values)
+        else:
+            norm_cache = self._norm_search_cache
+            self.visible_values = [
+                v for v in self.all_values
+                if all(tok in norm_cache[v] for tok in tokens)
+            ]
+
+        # 初期全選択状態から検索語を入力した場合は、検索結果のみを自動的にチェック状態にする（Excel準拠）
+        if from_search_typing and self._initial_all_checked and not self._user_toggled_items:
+            if tokens:
+                vis_set = set(self.visible_values)
+                for v in self.all_values:
+                    self.checked_map[v] = (v in vis_set)
+            else:
+                for v in self.all_values:
+                    self.checked_map[v] = True
+
+        self._update_match_info_label()
+
+        self._render_token += 1
+        token = self._render_token
+        self.tv.delete(*self.tv.get_children())
+        self._render_tree_chunk(0, 250, token)
+
+    def _render_tree_chunk(self, start_idx: int, chunk_size: int, token: int):
+        self._chunk_after_id = None
+        if token != self._render_token:
+            return
+        try:
+            if not self.tv.winfo_exists():
+                return
+        except Exception:
+            return
+
+        total_vis = len(self.visible_values)
+        end_idx = min(start_idx + chunk_size, total_vis)
+        tv_insert = self.tv.insert
+        end_pos = tk.END
+        checked_map = self.checked_map
+        val_counts = self.value_counts
+        disp_cache = self._disp_cache
+
+        for idx in range(start_idx, end_idx):
+            v = self.visible_values[idx]
+            mark = "☑" if checked_map.get(v, False) else "☐"
+            tv_insert("", end_pos, iid=str(idx), values=(mark, disp_cache[v], f"{val_counts[v]:,}"))
+
+        if end_idx < total_vis:
+            self._chunk_after_id = self.after(1, lambda: self._render_tree_chunk(end_idx, 800, token))
+
+    def _refresh_rendered_checkmarks(self):
+        """現在Treeview上に描画されている行のチェック記号だけを一括高速更新する"""
+        checked_map = self.checked_map
+        val_counts = self.value_counts
+        disp_cache = self._disp_cache
+        for row_id in self.tv.get_children():
+            idx = int(row_id)
+            if 0 <= idx < len(self.visible_values):
+                v = self.visible_values[idx]
+                mark = "☑" if checked_map.get(v, False) else "☐"
+                self.tv.item(row_id, values=(mark, disp_cache[v], f"{val_counts[v]:,}"))
+        self._update_match_info_label()
 
     def _toggle_select_all(self):
+        self._user_toggled_items = True
         target = self.all_selected_var.get()
         for v in self.visible_values:
             self.checked_map[v] = target
-        self._rebuild_tree()
+        self._refresh_rendered_checkmarks()
+
+    def _select_only_visible(self):
+        """現在表示中の検索候補のみを選択し、それ以外をすべて解除する"""
+        self._user_toggled_items = True
+        vis_set = set(self.visible_values)
+        for v in self.all_values:
+            self.checked_map[v] = (v in vis_set)
+        self._refresh_rendered_checkmarks()
+
+    def _check_all_values(self):
+        self._user_toggled_items = True
+        for v in self.all_values:
+            self.checked_map[v] = True
+        self._refresh_rendered_checkmarks()
+
+    def _uncheck_all_values(self):
+        self._user_toggled_items = True
+        for v in self.all_values:
+            self.checked_map[v] = False
+        self._refresh_rendered_checkmarks()
+
+    def _set_row_checked(self, row_id: str, new_state: bool):
+        if not row_id:
+            return
+        idx = int(row_id)
+        if 0 <= idx < len(self.visible_values):
+            self._user_toggled_items = True
+            val = self.visible_values[idx]
+            if self.checked_map.get(val) == new_state:
+                return
+            self.checked_map[val] = new_state
+            mark = "☑" if new_state else "☐"
+            self.tv.item(row_id, values=(mark, self._disp_cache[val], f"{self.value_counts[val]:,}"))
+            self._update_match_info_label()
 
     def _on_tv_click(self, event):
         region = self.tv.identify_region(event.x, event.y)
@@ -2147,25 +2391,29 @@ class ExcelFilterPopup(tk.Toplevel):
         idx = int(row_id)
         if 0 <= idx < len(self.visible_values):
             val = self.visible_values[idx]
-            new_state = not self.checked_map.get(val, True)
-            self.checked_map[val] = new_state
-            mark = "☑" if new_state else "☐"
-            self.tv.item(row_id, values=(mark, self._display_val(val), f"{self.value_counts[val]:,}"))
-            self.all_selected_var.set(all(self.checked_map.get(v, True) for v in self.visible_values))
+            new_state = not self.checked_map.get(val, False)
+            self._drag_check_target = new_state
+            self._set_row_checked(row_id, new_state)
+            self.tv.selection_set(row_id)
+            self.tv.focus(row_id)
+
+    def _on_tv_drag(self, event):
+        if self._drag_check_target is None:
+            return
+        row_id = self.tv.identify_row(event.y)
+        if row_id:
+            self._set_row_checked(row_id, self._drag_check_target)
 
     def _on_tv_space(self, event):
         sel = self.tv.selection()
         if not sel:
-            return
+            return "break"
         row_id = sel[0]
         idx = int(row_id)
         if 0 <= idx < len(self.visible_values):
             val = self.visible_values[idx]
-            new_state = not self.checked_map.get(val, True)
-            self.checked_map[val] = new_state
-            mark = "☑" if new_state else "☐"
-            self.tv.item(row_id, values=(mark, self._display_val(val), f"{self.value_counts[val]:,}"))
-            self.all_selected_var.set(all(self.checked_map.get(v, True) for v in self.visible_values))
+            self._set_row_checked(row_id, not self.checked_map.get(val, False))
+        return "break"
 
     def _do_sort_asc(self):
         self.on_sort(self.col_name, False)
@@ -2181,14 +2429,16 @@ class ExcelFilterPopup(tk.Toplevel):
 
     def _do_ok(self):
         kw = self.search_var.get().strip()
-        if kw:
-            # 検索中にOKした場合は、検索結果の中でチェックされている値のみに絞る（Excelと同じ挙動）
-            selected_set = {v for v in self.visible_values if self.checked_map.get(v, True)}
+        checked_all = {v for v in self.all_values if self.checked_map.get(v, False)}
+
+        # 全解除したあと検索ワードを入力してそのままOKを押した場合は、現在の検索一致候補を採用する
+        if kw and not checked_all and self.visible_values:
+            checked_all = set(self.visible_values)
+
+        if len(checked_all) == len(self.all_values):
+            selected_set = None
         else:
-            if all(self.checked_map.get(v, True) for v in self.all_values):
-                selected_set = None
-            else:
-                selected_set = {v for v in self.all_values if self.checked_map.get(v, True)}
+            selected_set = checked_all
 
         num_op = self.num_op_var.get()
         num_v1 = None
@@ -2250,44 +2500,13 @@ class ColumnCopyDialog(tk.Toplevel):
         frame = ttk.Frame(self, style="Card.TFrame", padding=14)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(frame, text="コピーする列を選択してください", style="Title.TLabel").pack(anchor=tk.W)
-        ttk.Label(
-            frame,
-            text="選択した列をタブ区切りでクリップボードへコピーします。別のExcelで Ctrl+V するだけで貼り付けできます。",
-            style="Mtime.TLabel",
-            wraplength=440,
-        ).pack(anchor=tk.W, pady=(2, 8))
-
-        quick_f = ttk.Frame(frame, style="Flat.TFrame")
-        quick_f.pack(fill=tk.X, pady=(0, 6))
-        ttk.Button(quick_f, text="すべて選択", command=lambda: self._set_preset("all")).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(quick_f, text="すべて解除", command=lambda: self._set_preset("none")).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(quick_f, text="その他見出しのみ", command=lambda: self._set_preset("meta")).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(quick_f, text="集計・小計のみ", command=lambda: self._set_preset("calc")).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(quick_f, text="管理No＋集計", command=lambda: self._set_preset("kno_calc")).pack(side=tk.LEFT)
-
-        tv_frame = ttk.Frame(frame, style="Card.TFrame")
-        tv_frame.pack(fill=tk.BOTH, expand=True)
-
-        self.tv = ttk.Treeview(tv_frame, columns=("chk", "col", "kind"), show="headings", selectmode="browse")
-        vsb = ttk.Scrollbar(tv_frame, orient=tk.VERTICAL, command=self.tv.yview)
-        self.tv.configure(yscrollcommand=vsb.set)
-        self.tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.tv.heading("chk", text="選択")
-        self.tv.heading("col", text="列名（ダブルクリックで即その1列のみコピー）")
-        self.tv.heading("kind", text="区分")
-        self.tv.column("chk", width=50, anchor=tk.CENTER, stretch=False)
-        self.tv.column("col", width=260, anchor=tk.W)
-        self.tv.column("kind", width=85, anchor=tk.CENTER, stretch=False)
-
-        self.tv.bind("<Button-1>", self._on_click)
-        self.tv.bind("<Double-1>", self._on_double_click)
-        self.tv.bind("<space>", self._on_space)
+        footer = ttk.Frame(frame, style="Flat.TFrame")
+        footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
+        ttk.Button(footer, text="キャンセル", command=self.destroy).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(footer, text="クリップボードにコピー", style="Primary.TButton", command=self._do_copy).pack(side=tk.RIGHT)
 
         opt_box = ttk.LabelFrame(frame, text="コピー形式オプション", padding=(8, 6))
-        opt_box.pack(fill=tk.X, pady=(8, 6))
+        opt_box.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 4))
 
         self.include_header_var = tk.BooleanVar(value=True)
         self.raw_number_var = tk.BooleanVar(value=True)
@@ -2344,10 +2563,41 @@ class ColumnCopyDialog(tk.Toplevel):
         if selected_count == 0:
             rb_sel.configure(state=tk.DISABLED)
 
-        footer = ttk.Frame(frame, style="Flat.TFrame")
-        footer.pack(fill=tk.X, pady=(6, 0))
-        ttk.Button(footer, text="キャンセル", command=self.destroy).pack(side=tk.RIGHT, padx=(6, 0))
-        ttk.Button(footer, text="クリップボードにコピー", style="Primary.TButton", command=self._do_copy).pack(side=tk.RIGHT)
+        ttk.Label(frame, text="コピーする列を選択してください", style="Title.TLabel").pack(anchor=tk.W)
+        ttk.Label(
+            frame,
+            text="選択した列をタブ区切りでクリップボードへコピーします。別のExcelで Ctrl+V するだけで貼り付けできます。",
+            style="Mtime.TLabel",
+            wraplength=440,
+        ).pack(anchor=tk.W, pady=(2, 8))
+
+        quick_f = ttk.Frame(frame, style="Flat.TFrame")
+        quick_f.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(quick_f, text="すべて選択", command=lambda: self._set_preset("all")).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(quick_f, text="すべて解除", command=lambda: self._set_preset("none")).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(quick_f, text="その他見出しのみ", command=lambda: self._set_preset("meta")).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(quick_f, text="集計・小計のみ", command=lambda: self._set_preset("calc")).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(quick_f, text="管理No＋集計", command=lambda: self._set_preset("kno_calc")).pack(side=tk.LEFT)
+
+        tv_frame = ttk.Frame(frame, style="Card.TFrame")
+        tv_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self.tv = ttk.Treeview(tv_frame, columns=("chk", "col", "kind"), show="headings", selectmode="browse", height=6)
+        vsb = ttk.Scrollbar(tv_frame, orient=tk.VERTICAL, command=self.tv.yview)
+        self.tv.configure(yscrollcommand=vsb.set)
+        self.tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tv.heading("chk", text="選択")
+        self.tv.heading("col", text="列名（ダブルクリックで即その1列のみコピー）")
+        self.tv.heading("kind", text="区分")
+        self.tv.column("chk", width=50, anchor=tk.CENTER, stretch=False)
+        self.tv.column("col", width=260, anchor=tk.W)
+        self.tv.column("kind", width=85, anchor=tk.CENTER, stretch=False)
+
+        self.tv.bind("<Button-1>", self._on_click)
+        self.tv.bind("<Double-1>", self._on_double_click)
+        self.tv.bind("<space>", self._on_space)
 
         self._refresh()
 
@@ -3466,7 +3716,8 @@ class SplitGridPane(ttk.LabelFrame):
             col_idx = self.visible_columns.index(col_name)
             _, col_end_x = self._get_header_cell_bounds(col_idx)
             is_ctrl = bool(event.state & 0x0004)
-            if event.x >= col_end_x - 28 and col_end_x > 0:
+            filter_hit_w = 54 if col_name in self.app.column_filters else 36
+            if event.x >= col_end_x - filter_hit_w and col_end_x > 0:
                 self.app.open_excel_filter_popup(col_name, event.x_root, self.tree.winfo_rooty() + 30)
                 return "break"
             if is_ctrl:
@@ -3539,22 +3790,23 @@ class SplitGridPane(ttk.LabelFrame):
         col_name = self._resolve_tree_column(col_id)
 
         if region == "heading" and col_name:
+            disp_col = get_display_column_label(col_name, self.app.time_unit_var.get())
             self.header_menu.delete(0, tk.END)
             self.header_menu.add_command(
-                label=f"「{col_name}」列をまるごと選択",
+                label=f"「{disp_col}」列をまるごと選択",
                 command=lambda c=col_name: self.select_entire_column(c, add_mode=False),
             )
             self.header_menu.add_command(
-                label=f"「{col_name}」列をまるごと追加選択 (Ctrl相当)",
+                label=f"「{disp_col}」列をまるごと追加選択 (Ctrl相当)",
                 command=lambda c=col_name: self.select_entire_column(c, add_mode=True),
             )
             self.header_menu.add_separator()
             self.header_menu.add_command(
-                label=f"「{col_name}」列の全データをコピー（見出しなし・Excel貼付用）",
+                label=f"「{disp_col}」列の全データをコピー（見出しなし・Excel貼付用）",
                 command=lambda c=col_name: self.copy_columns_to_clipboard([c], include_header=False, raw_numbers=True, selected_only=False),
             )
             self.header_menu.add_command(
-                label=f"「{col_name}」列の全データをコピー（見出し付き・Excel貼付用）",
+                label=f"「{disp_col}」列の全データをコピー（見出し付き・Excel貼付用）",
                 command=lambda c=col_name: self.copy_columns_to_clipboard([c], include_header=True, raw_numbers=True, selected_only=False),
             )
             self.header_menu.add_command(
@@ -3563,17 +3815,17 @@ class SplitGridPane(ttk.LabelFrame):
             )
             self.header_menu.add_separator()
             self.header_menu.add_command(
-                label=f"「{col_name}」でExcel風フィルターを開く...",
+                label=f"「{disp_col}」でExcel風フィルターを開く...",
                 command=lambda c=col_name: self.app.open_excel_filter_popup(c, event.x_root, self.tree.winfo_rooty() + 30),
             )
             if col_name in self.app.column_filters:
                 self.header_menu.add_command(
-                    label=f"「{col_name}」のフィルターを解除",
+                    label=f"「{disp_col}」のフィルターを解除",
                     command=lambda c=col_name: self.app._clear_single_filter(c),
                 )
             self.header_menu.add_separator()
-            self.header_menu.add_command(label=f"この一覧を「{col_name}」昇順に並べ替え", command=lambda c=col_name: self.set_sort(c, False))
-            self.header_menu.add_command(label=f"この一覧を「{col_name}」降順に並べ替え", command=lambda c=col_name: self.set_sort(c, True))
+            self.header_menu.add_command(label=f"この一覧を「{disp_col}」昇順に並べ替え", command=lambda c=col_name: self.set_sort(c, False))
+            self.header_menu.add_command(label=f"この一覧を「{disp_col}」降順に並べ替え", command=lambda c=col_name: self.set_sort(c, True))
             if not (self.pane_id == "calc" and col_name == "管理No"):
                 self.header_menu.add_separator()
                 self.header_menu.add_command(label="この列を左へ移動", command=lambda c=col_name: self.app.shift_column(c, -1, self.pane_id))
@@ -3599,6 +3851,7 @@ class SplitGridPane(ttk.LabelFrame):
 
             sel_cnt = len(self.selected_cells)
             sel_rows = len({r for r, _ in self.selected_cells})
+            disp_col = get_display_column_label(col_name, self.app.time_unit_var.get()) if col_name else ""
             self.row_menu.delete(0, tk.END)
             if sel_cnt > 0:
                 self.row_menu.add_command(
@@ -3613,7 +3866,7 @@ class SplitGridPane(ttk.LabelFrame):
             if col_name:
                 cell_val = self._get_cell_value_for_copy(row_id, col_name, raw_numbers=True)
                 self.row_menu.add_command(
-                    label=f"このセル（{col_name}）の値をコピー",
+                    label=f"このセル（{disp_col}）の値をコピー",
                     command=lambda v=cell_val: self.app._copy_text(v),
                 )
             self.row_menu.add_command(label=f"管理No「{row_id}」をコピー", command=lambda k=row_id: self.app._copy_text(k))
@@ -3624,15 +3877,15 @@ class SplitGridPane(ttk.LabelFrame):
             self.row_menu.add_separator()
             if col_name:
                 self.row_menu.add_command(
-                    label=f"「{col_name}」列をまるごと選択",
+                    label=f"「{disp_col}」列をまるごと選択",
                     command=lambda c=col_name: self.select_entire_column(c, add_mode=False),
                 )
                 self.row_menu.add_command(
-                    label=f"「{col_name}」列の全データをコピー（見出しなし）",
+                    label=f"「{disp_col}」列の全データをコピー（見出しなし）",
                     command=lambda c=col_name: self.copy_columns_to_clipboard([c], include_header=False, raw_numbers=True, selected_only=False),
                 )
                 self.row_menu.add_command(
-                    label=f"「{col_name}」列の全データをコピー（見出し付き）",
+                    label=f"「{disp_col}」列の全データをコピー（見出し付き）",
                     command=lambda c=col_name: self.copy_columns_to_clipboard([c], include_header=True, raw_numbers=True, selected_only=False),
                 )
             self.row_menu.add_command(
@@ -4469,9 +4722,11 @@ class DenpyoHubApp:
 
         ttk.Label(top_ctrl, text="全体検索:", style="Card.TLabel").pack(side=tk.LEFT, padx=(2, 2))
         self.search_entry = ttk.Entry(top_ctrl, textvariable=self.search_var, width=20)
-        self.search_entry.pack(side=tk.LEFT, padx=(0, 4))
+        self.search_entry.pack(side=tk.LEFT, padx=(0, 3))
         self.search_entry.bind("<KeyRelease>", self._on_search_key_release)
+        self.search_entry.bind("<Return>", self._run_search_now)
 
+        ttk.Button(top_ctrl, text="検索", width=5, command=self._run_search_now).pack(side=tk.LEFT, padx=(0, 3))
         ttk.Button(top_ctrl, text="クリア", width=6, command=self._clear_search).pack(side=tk.LEFT, padx=(0, 10))
 
         ttk.Label(top_ctrl, text="表示対象:", style="Card.TLabel").pack(side=tk.LEFT, padx=(2, 2))
@@ -5334,14 +5589,37 @@ class DenpyoHubApp:
         self.code_summary_var.set("作業コード設定  |  " + "   /   ".join(parts))
 
     def _on_search_key_release(self, event=None):
-        """検索キーワードが実際に変化したときだけ一覧フィルタリングを実行して高速化する"""
-        cur_kw = self.search_var.get().strip().lower()
+        """検索キーワードが変化したときデバウンス付きで一覧フィルタリングを実行して高速化する"""
+        cur_kw = normalize_search_text(self.search_var.get())
         if cur_kw == self._last_search_kw:
             return
+        if getattr(self, "_search_debounce_job", None) is not None:
+            try:
+                self.root.after_cancel(self._search_debounce_job)
+            except Exception:
+                pass
+            self._search_debounce_job = None
+        self._search_debounce_job = self.root.after(120, self._run_search_now)
+
+    def _run_search_now(self, event=None):
+        """全体検索を即時に反映する（Enter押下・検索ボタン押下・デバウンス完了時）"""
+        if getattr(self, "_search_debounce_job", None) is not None:
+            try:
+                self.root.after_cancel(self._search_debounce_job)
+            except Exception:
+                pass
+            self._search_debounce_job = None
+        cur_kw = normalize_search_text(self.search_var.get())
         self._last_search_kw = cur_kw
         self.apply_filter_and_refresh()
 
     def _clear_search(self):
+        if getattr(self, "_search_debounce_job", None) is not None:
+            try:
+                self.root.after_cancel(self._search_debounce_job)
+            except Exception:
+                pass
+            self._search_debounce_job = None
         self.search_var.set("")
         self._last_search_kw = ""
         self.apply_filter_and_refresh()
@@ -6119,7 +6397,9 @@ class DenpyoHubApp:
             v_bikou = j.get("V", "") or fb.get("備考", "")
 
             has_seizo_flag = bool(kno in seizo_by_kno or any(abs(sz[c]) > 1e-9 for c in SEIZO_COST_COLUMNS))
-            search_haystack = f"{kno} {v_juchu_saki} {v_shukka_saki} {v_proj} {v_hinmei} {v_detail} {v_tehai} {v_uriage} {v_bikou}".lower()
+            search_haystack = normalize_search_text(
+                f"{kno} {v_juchu_saki} {v_shukka_saki} {v_proj} {v_hinmei} {v_detail} {v_tehai} {v_uriage} {v_bikou}"
+            )
 
             row_dict = {
                 "管理No": kno,
@@ -6293,11 +6573,11 @@ class DenpyoHubApp:
         elif mode == "作業＋購入・外注の両方あり" and (w_sub <= 0 or c_sub <= 0):
             return False
 
-        kw = self.search_var.get().strip().lower()
+        kw = normalize_search_text(self.search_var.get())
         if kw:
             haystack = r.get("_search_text")
             if haystack is None:
-                haystack = " ".join([
+                haystack = normalize_search_text(" ".join([
                     str(r.get("管理No", "")),
                     str(r.get("受注先", "")),
                     str(r.get("出荷先", "")),
@@ -6307,9 +6587,10 @@ class DenpyoHubApp:
                     str(r.get("製造又は手配先", "")),
                     str(r.get("売り上げ区分", "")),
                     str(r.get("備考", "")),
-                ]).lower()
+                ]))
                 r["_search_text"] = haystack
-            if kw not in haystack:
+            tokens = [t for t in kw.split() if t]
+            if not all(t in haystack for t in tokens):
                 return False
 
         for f_col, f_spec in self.column_filters.items():
@@ -6370,6 +6651,7 @@ class DenpyoHubApp:
                 if v not in counts:
                     counts[v] = 0
 
+        disp_col = get_display_column_label(col_name, self.time_unit_var.get())
         ExcelFilterPopup(
             parent=self.root,
             col_name=col_name,
@@ -6381,6 +6663,7 @@ class DenpyoHubApp:
             on_sort=self.set_sort,
             on_apply_filter=self._apply_single_filter,
             on_clear_filter=self._clear_single_filter,
+            display_col_name=disp_col,
         )
 
     def _apply_single_filter(self, col_name: str, spec: dict):

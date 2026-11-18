@@ -34,6 +34,7 @@ jobs:
         --add-data "README.md;." 
         --add-data "icon.ico;." 
         --hidden-import openpyxl 
+        --hidden-import xlrd 
         --hidden-import win32com.client 
         --hidden-import pythoncom 
         --hidden-import pywintypes 

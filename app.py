@@ -593,40 +593,74 @@ def _sleep_cancellable(seconds: float, cancel_check=None):
         time.sleep(min(0.05, rem))
 
 
+def _calc_kounyu_row_amount(r: dict) -> float:
+    """購入品・外注加工の1行金額を算出する共通コア（Q列優先、空欄時は 単価M×必要数N の整数値）"""
+    q_val = r.get("Q")
+    if q_val is not None and str(q_val).strip() != "":
+        return to_float(q_val, 0.0)
+    return float(int(to_float(r.get("M"), 0.0) * to_float(r.get("N"), 0.0)))
+
+
+def _to_win32_extended_path(filepath: str) -> str:
+    """260文字超の深いフォルダ（Google Drive / NAS UNC等）でもCreateFileWで開けるよう拡張長パス形式へ変換する"""
+    abs_p = os.path.abspath(os.path.normpath(filepath))
+    if abs_p.startswith("\\\\?\\") or len(abs_p) < 248:
+        return abs_p
+    if abs_p.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + abs_p[2:]
+    return "\\\\?\\" + abs_p
+
+
+_WIN32_CREATE_FILE = None
+_WIN32_CLOSE_HANDLE = None
+_WIN32_INVALID_HANDLE_VALUE = None
+if sys.platform == "win32":
+    try:
+        import ctypes as _ct_init
+        from ctypes import wintypes as _wt_init
+
+        _k32_init = _ct_init.WinDLL("kernel32", use_last_error=True)
+        _WIN32_CREATE_FILE = _k32_init.CreateFileW
+        _WIN32_CREATE_FILE.argtypes = [
+            _wt_init.LPCWSTR,
+            _wt_init.DWORD,
+            _wt_init.DWORD,
+            _ct_init.c_void_p,
+            _wt_init.DWORD,
+            _wt_init.DWORD,
+            _wt_init.HANDLE,
+        ]
+        _WIN32_CREATE_FILE.restype = _ct_init.c_void_p
+        _WIN32_CLOSE_HANDLE = _k32_init.CloseHandle
+        _WIN32_CLOSE_HANDLE.argtypes = [_ct_init.c_void_p]
+        _WIN32_CLOSE_HANDLE.restype = _wt_init.BOOL
+        _WIN32_INVALID_HANDLE_VALUE = _ct_init.c_void_p(-1).value
+    except Exception:
+        _WIN32_CREATE_FILE = None
+        _WIN32_CLOSE_HANDLE = None
+        _WIN32_INVALID_HANDLE_VALUE = None
+
+
 def _open_win32_shared_readonly_file(filepath: str):
     """
     Windows 11 で他のユーザーやExcelが開いているファイルでも支障なく読み取りでき、
     かつこちらの読み込みが他ユーザーの保存（名前変更・削除）を阻害しないよう
     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE で読み取り専用オープンする。
     """
-    import ctypes
-    from ctypes import wintypes
-    import msvcrt
+    if _WIN32_CREATE_FILE is None or _WIN32_CLOSE_HANDLE is None:
+        return open(filepath, "rb")
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    create_file = kernel32.CreateFileW
-    create_file.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    create_file.restype = ctypes.c_void_p
-    close_handle = kernel32.CloseHandle
-    close_handle.argtypes = [ctypes.c_void_p]
-    close_handle.restype = wintypes.BOOL
+    import ctypes
+    import msvcrt
 
     GENERIC_READ = 0x80000000
     FILE_SHARE_ALL = 0x00000001 | 0x00000002 | 0x00000004  # READ | WRITE | DELETE
     OPEN_EXISTING = 3
     FILE_FLAGS = 0x00000080 | 0x08000000  # FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN
-    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
-    handle = create_file(filepath, GENERIC_READ, FILE_SHARE_ALL, None, OPEN_EXISTING, FILE_FLAGS, None)
-    if handle is None or handle == INVALID_HANDLE_VALUE:
+    win_path = _to_win32_extended_path(filepath)
+    handle = _WIN32_CREATE_FILE(win_path, GENERIC_READ, FILE_SHARE_ALL, None, OPEN_EXISTING, FILE_FLAGS, None)
+    if handle is None or handle == _WIN32_INVALID_HANDLE_VALUE:
         err = ctypes.get_last_error()
         if err in (2, 3):
             raise FileNotFoundError(f"ファイルが見つかりません: {filepath}")
@@ -640,7 +674,7 @@ def _open_win32_shared_readonly_file(filepath: str):
         fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
     except Exception:
         try:
-            close_handle(handle)
+            _WIN32_CLOSE_HANDLE(handle)
         except Exception:
             pass
         raise
@@ -1318,6 +1352,7 @@ class SeizoCacheStore:
             }
             self._dirty = False
 
+        tmp_path = None
         try:
             parent = os.path.dirname(os.path.abspath(self.cache_path))
             if parent and not os.path.exists(parent):
@@ -1325,9 +1360,18 @@ class SeizoCacheStore:
             tmp_path = f"{self.cache_path}.tmp.{os.getpid()}.{threading.get_ident()}"
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, ensure_ascii=False, separators=(",", ":"))
-            os.replace(tmp_path, self.cache_path)
+            try:
+                os.replace(tmp_path, self.cache_path)
+            except OSError:
+                time.sleep(0.06)
+                os.replace(tmp_path, self.cache_path)
+            tmp_path = None
         except Exception:
-            pass
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
 
 def _load_shared_strings_subset_from_zip(z: zipfile.ZipFile, namelist_set: set, needed_indices: set, cancel_check=None) -> dict:
@@ -2432,6 +2476,8 @@ def open_in_excel_new_workbook(
 
             pythoncom.CoInitialize()
             excel = None
+            wb = None
+            wb_completed = False
             try:
                 excel = win32_client.Dispatch("Excel.Application")
                 excel.Visible = True
@@ -2631,8 +2677,14 @@ def open_in_excel_new_workbook(
                         excel.ActiveWindow.FreezePanes = True
                     except Exception:
                         pass
+                wb_completed = True
                 return
             finally:
+                if wb is not None and not wb_completed:
+                    try:
+                        wb.Close(SaveChanges=False)
+                    except Exception:
+                        pass
                 if excel is not None:
                     try:
                         excel.ScreenUpdating = True
@@ -2930,18 +2982,24 @@ def export_multi_sheet_xlsx(
             cols_xml,
             "<sheetData>",
         ]
+        has_data = bool(rows)
         for r_i, r_data in enumerate(all_rows, 1):
             lines.append(f'<row r="{r_i}">')
             for c_i, val in enumerate(r_data):
                 ref = f"{col_index_to_letter(c_i)}{r_i}"
-                if r_i >= 4 and c_i in num_cols and val != "" and val is not None:
+                is_num_cell = (r_i >= 4) and (has_data or r_i != 4) and (c_i in num_cols) and (val != "") and (val is not None)
+                if is_num_cell:
                     lines.append(f'<c r="{ref}"><v>{to_float(val, 0.0)}</v></c>')
                 else:
                     lines.append(f'<c r="{ref}" t="inlineStr"><is><t>{escape(str(val if val is not None else ""))}</t></is></c>')
             lines.append("</row>")
         lines.append("</sheetData>")
         last_col_l = col_index_to_letter(n_cols - 1)
-        lines.append(f'<mergeCells count="2"><mergeCell ref="A1:{last_col_l}1"/><mergeCell ref="A2:{last_col_l}2"/></mergeCells>')
+        if n_cols > 1:
+            merges = [f'<mergeCell ref="A1:{last_col_l}1"/>', f'<mergeCell ref="A2:{last_col_l}2"/>']
+            if not has_data:
+                merges.append(f'<mergeCell ref="A4:{last_col_l}4"/>')
+            lines.append(f'<mergeCells count="{len(merges)}">' + "".join(merges) + "</mergeCells>")
         lines.append('<printOptions horizontalCentered="1"/>')
         lines.append('<pageMargins left="0.35" right="0.35" top="0.55" bottom="0.55" header="0.24" footer="0.24"/>')
         lines.append('<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>')
@@ -3051,26 +3109,30 @@ def open_detail_in_excel_new_workbook(
 
             pythoncom.CoInitialize()
             excel = None
+            wb = None
+            wb_completed = False
+            orig_alerts = True
             try:
                 excel = win32_client.Dispatch("Excel.Application")
                 excel.Visible = True
+                try:
+                    orig_alerts = bool(excel.DisplayAlerts)
+                    excel.DisplayAlerts = False
+                except Exception:
+                    pass
                 try:
                     excel.ScreenUpdating = False
                 except Exception:
                     pass
 
                 wb = excel.Workbooks.Add()
-                # 新規ブックの初期シート数を1枚に揃えた上で必要数だけ末尾へ追加
-                try:
-                    while wb.Worksheets.Count > 1:
-                        wb.Worksheets(wb.Worksheets.Count).Delete()
-                except Exception:
-                    pass
-
+                # 既存シートを優先再利用し、不足分のみ追加、余剰分のみDisplayAlerts=Falseで安全に削除
                 created_sheets = []
+                need_cnt = len(normalized_specs)
+                existing_cnt = int(getattr(wb.Worksheets, "Count", 1))
                 for idx_s, sp in enumerate(normalized_specs):
-                    if idx_s == 0:
-                        ws = wb.Worksheets(1)
+                    if idx_s < existing_cnt:
+                        ws = wb.Worksheets(idx_s + 1)
                     else:
                         ws = wb.Worksheets.Add(After=wb.Worksheets(wb.Worksheets.Count))
                     try:
@@ -3078,6 +3140,11 @@ def open_detail_in_excel_new_workbook(
                     except Exception:
                         pass
                     created_sheets.append((sp, ws))
+                try:
+                    while wb.Worksheets.Count > need_cnt:
+                        wb.Worksheets(wb.Worksheets.Count).Delete()
+                except Exception:
+                    pass
 
                 target_ws = created_sheets[0][1]
                 for sp, ws in created_sheets:
@@ -3161,8 +3228,18 @@ def open_detail_in_excel_new_workbook(
                         except Exception:
                             pass
 
-                    # 3行目以降を一括高速書き込み
-                    ws.Range(ws.Cells(start_tbl_r, 1), ws.Cells(last_r, n_cols)).Value = tuple(tuple(r) for r in table_rows)
+                    # 3行目以降を一括高速書き込み（大量行時は4,000行単位でチャンク書込）
+                    chunk_rows = 4000
+                    n_tbl_rows = len(table_rows)
+                    if n_tbl_rows <= chunk_rows:
+                        ws.Range(ws.Cells(start_tbl_r, 1), ws.Cells(last_r, n_cols)).Value = tuple(tuple(r) for r in table_rows)
+                    else:
+                        for st_i in range(0, n_tbl_rows, chunk_rows):
+                            ed_i = min(st_i + chunk_rows, n_tbl_rows)
+                            ws.Range(
+                                ws.Cells(start_tbl_r + st_i, 1),
+                                ws.Cells(start_tbl_r + ed_i - 1, n_cols),
+                            ).Value = tuple(tuple(r) for r in table_rows[st_i:ed_i])
 
                     # スタイル設定
                     try:
@@ -3177,11 +3254,13 @@ def open_detail_in_excel_new_workbook(
                         t1_rng.Interior.Color = rgb_to_bgr(219, 234, 254)
                         ws.Rows(1).RowHeight = 26
 
+                        sub_txt = sp.get("subtitle", "")
                         t2_rng = ws.Range(ws.Cells(2, 1), ws.Cells(2, n_cols))
                         t2_rng.Font.Size = 9
                         t2_rng.Font.Color = rgb_to_bgr(51, 65, 85)
                         t2_rng.Interior.Color = rgb_to_bgr(241, 245, 249)
-                        ws.Rows(2).RowHeight = 20
+                        t2_rng.WrapText = True
+                        ws.Rows(2).RowHeight = 30 if len(sub_txt) > 85 else 20
 
                         hdr_rng = ws.Range(ws.Cells(3, 1), ws.Cells(3, n_cols))
                         hdr_rng.Font.Bold = True
@@ -3221,15 +3300,20 @@ def open_detail_in_excel_new_workbook(
                             if last_r >= 4:
                                 ws.Range(ws.Cells(4, c0 + 1), ws.Cells(last_r, c0 + 1)).WrapText = True
 
-                        ws.Columns.AutoFit()
+                        # タイトル結合行(1～2行)を除いたテーブル範囲で列幅自動調整
+                        ws.Range(ws.Cells(3, 1), ws.Cells(last_r, n_cols)).Columns.AutoFit()
                         for c_idx in range(1, n_cols + 1):
                             cur_w = ws.Columns(c_idx).ColumnWidth
                             ws.Columns(c_idx).ColumnWidth = min(max(cur_w + 2.5, 9.5), 42)
                         if last_r >= 4:
-                            ws.Range(ws.Rows(4), ws.Rows(last_r)).AutoFit()
-                            for r_i in range(4, min(last_r + 1, 200)):
-                                if ws.Rows(r_i).RowHeight < 19:
-                                    ws.Rows(r_i).RowHeight = 19
+                            data_last_r = last_r - 1 if totals_row else last_r
+                            if data_last_r >= 4:
+                                ws.Range(ws.Rows(4), ws.Rows(data_last_r)).RowHeight = 20
+                                if wrap_cols:
+                                    ws.Range(ws.Rows(4), ws.Rows(data_last_r)).AutoFit()
+                                    for r_i in range(4, data_last_r + 1):
+                                        if ws.Rows(r_i).RowHeight < 19:
+                                            ws.Rows(r_i).RowHeight = 19
                     except Exception:
                         pass
 
@@ -3282,9 +3366,19 @@ def open_detail_in_excel_new_workbook(
                     target_ws.Activate()
                 except Exception:
                     pass
+                wb_completed = True
                 return None
             finally:
+                if wb is not None and not wb_completed:
+                    try:
+                        wb.Close(SaveChanges=False)
+                    except Exception:
+                        pass
                 if excel is not None:
+                    try:
+                        excel.DisplayAlerts = orig_alerts
+                    except Exception:
+                        pass
                     try:
                         excel.ScreenUpdating = True
                     except Exception:
@@ -6275,9 +6369,12 @@ class SplitGridPane(ttk.LabelFrame):
             return "break"
 
         lines = []
+        unit_now = self.app.time_unit_var.get()
+        rates_tuple = self.app._get_rates_tuple()
+        get_w = self.app._get_work_numeric_val
+        get_disp = self.app._get_cell_display_str
         if include_header:
-            unit = self.app.time_unit_var.get()
-            lines.append("\t".join(escape_tsv_cell(get_display_column_label(c, unit)) for c in cols_sorted))
+            lines.append("\t".join(escape_tsv_cell(get_display_column_label(c, unit_now)) for c in cols_sorted))
         for r_idx in rows_sorted:
             r_dict = self.rows[r_idx]
             row_cells = []
@@ -6287,14 +6384,14 @@ class SplitGridPane(ttk.LabelFrame):
                     continue
                 if raw_numbers:
                     if col in RATE_DEPENDENT_COLUMNS:
-                        val = self.app._get_work_numeric_val(r_dict, col)
+                        val = get_w(r_dict, col, rates_tuple=rates_tuple, unit=unit_now)
                         cell_str = str(int(round(val))) if abs(val - round(val)) < 1e-6 else f"{val:.2f}"
                     elif col in COST_YEN_COLUMNS:
                         cell_str = str(int(round(r_dict.get(col, 0.0))))
                     else:
                         cell_str = str(r_dict.get(col, ""))
                 else:
-                    cell_str = self.app._get_cell_display_str(r_dict, col)
+                    cell_str = get_disp(r_dict, col, unit=unit_now, rates_tuple=rates_tuple)
                 row_cells.append(escape_tsv_cell(cell_str))
             lines.append("\t".join(row_cells))
 
@@ -6339,28 +6436,30 @@ class SplitGridPane(ttk.LabelFrame):
             target_rows = self.rows
 
         lines = []
+        unit_now = self.app.time_unit_var.get()
+        rates_tuple = self.app._get_rates_tuple()
+        get_w = self.app._get_work_numeric_val
+        get_disp = self.app._get_cell_display_str
         if include_header:
-            unit = self.app.time_unit_var.get()
-            lines.append("\t".join(escape_tsv_cell(get_display_column_label(c, unit)) for c in columns))
+            lines.append("\t".join(escape_tsv_cell(get_display_column_label(c, unit_now)) for c in columns))
         for r in target_rows:
             row_cells = []
             for col in columns:
                 if raw_numbers:
                     if col in RATE_DEPENDENT_COLUMNS:
-                        val = self.app._get_work_numeric_val(r, col)
+                        val = get_w(r, col, rates_tuple=rates_tuple, unit=unit_now)
                         cell_str = str(int(round(val))) if abs(val - round(val)) < 1e-6 else f"{val:.2f}"
                     elif col in COST_YEN_COLUMNS:
                         cell_str = str(int(round(r.get(col, 0.0))))
                     else:
                         cell_str = str(r.get(col, ""))
                 else:
-                    cell_str = self.app._get_cell_display_str(r, col)
+                    cell_str = get_disp(r, col, unit=unit_now, rates_tuple=rates_tuple)
                 row_cells.append(escape_tsv_cell(cell_str))
             lines.append("\t".join(row_cells))
 
         self.app.root.clipboard_clear()
         self.app.root.clipboard_append("\r\n".join(lines))
-        unit_now = self.app.time_unit_var.get()
         col_label = get_display_column_label(columns[0], unit_now) if len(columns) == 1 else f"{len(columns)}列"
         self.app.status_var.set(f"クリップボードにコピーしました（{col_label} × {len(target_rows):,}行・Excelへ Ctrl+V で貼付可能）")
 
@@ -7746,29 +7845,29 @@ class DenpyoHubApp:
             target_rows = source_rows
 
         lines = []
+        unit_now = self.time_unit_var.get()
+        rates_tuple = self._get_rates_tuple()
         if include_header:
-            unit = self.time_unit_var.get()
-            lines.append("\t".join(escape_tsv_cell(get_display_column_label(c, unit)) for c in columns))
+            lines.append("\t".join(escape_tsv_cell(get_display_column_label(c, unit_now)) for c in columns))
 
         for r in target_rows:
             row_cells = []
             for col in columns:
                 if raw_numbers:
                     if col in RATE_DEPENDENT_COLUMNS:
-                        val = self._get_work_numeric_val(r, col)
+                        val = self._get_work_numeric_val(r, col, rates_tuple=rates_tuple, unit=unit_now)
                         cell_str = str(int(round(val))) if abs(val - round(val)) < 1e-6 else f"{val:.2f}"
                     elif col in COST_YEN_COLUMNS:
                         cell_str = str(int(round(r.get(col, 0.0))))
                     else:
                         cell_str = str(r.get(col, ""))
                 else:
-                    cell_str = self._get_cell_display_str(r, col)
+                    cell_str = self._get_cell_display_str(r, col, unit=unit_now, rates_tuple=rates_tuple)
                 row_cells.append(escape_tsv_cell(cell_str))
             lines.append("\t".join(row_cells))
 
         self.root.clipboard_clear()
         self.root.clipboard_append("\r\n".join(lines))
-        unit_now = self.time_unit_var.get()
         col_label = get_display_column_label(columns[0], unit_now) if len(columns) == 1 else f"{len(columns)}列"
         self.status_var.set(f"クリップボードにコピーしました（{col_label} × {len(target_rows):,}行・Excelへ Ctrl+V で貼付可能）")
 
@@ -7898,14 +7997,26 @@ class DenpyoHubApp:
                 os.makedirs(parent_dir, exist_ok=True)
 
             tmp_save = f"{save_to}.tmp.{os.getpid()}"
-            with open(tmp_save, "w", encoding="utf-8") as f:
-                f.write(json_str)
-                f.flush()
+            try:
+                with open(tmp_save, "w", encoding="utf-8") as f:
+                    f.write(json_str)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
                 try:
-                    os.fsync(f.fileno())
-                except Exception:
-                    pass
-            os.replace(tmp_save, save_to)
+                    os.replace(tmp_save, save_to)
+                except OSError:
+                    time.sleep(0.06)
+                    os.replace(tmp_save, save_to)
+            except Exception:
+                if os.path.exists(tmp_save):
+                    try:
+                        os.remove(tmp_save)
+                    except Exception:
+                        pass
+                raise
 
             self._last_saved_config_json = json_str
             self.config_path = save_to
@@ -8865,6 +8976,7 @@ class DenpyoHubApp:
         self.aggregated_rows = bundle["aggregated_rows"]
 
         self.apply_filter_and_refresh()
+        self._refresh_current_detail_if_selected()
         err_suffix = f" / エラー: {len(self.last_errors)} 件（エラー確認ボタンから詳細確認可）" if self.last_errors else ""
         self.status_var.set(
             f"集計完了: 全管理No {len(self.aggregated_rows):,} 件 "
@@ -8873,6 +8985,33 @@ class DenpyoHubApp:
         )
         if self.last_errors:
             ErrorReportDialog(self.root, self.last_errors)
+
+    def _refresh_current_detail_if_selected(self):
+        """集計・再算出後に現在選択中の管理Noが存在すれば下部内訳明細も最新データへ同期する"""
+        kno = self._current_detail_kno
+        if not kno:
+            return
+        if (
+            kno in self.daily_by_kno
+            or kno in self.kounyu_by_kno
+            or kno in self.gaichu_by_kno
+            or kno in self.juchu_by_kno
+            or kno in self.seizo_by_kno
+            or any(r.get("管理No") == kno for r in self.aggregated_rows)
+        ):
+            self._show_detail_for_kno(kno)
+        else:
+            self._current_detail_kno = None
+            for tv in (self.tree_daily, self.tree_kounyu, self.tree_gaichu, self.tree_juchu, self.tree_seizo):
+                tv.delete(*tv.get_children())
+            self.detail_notebook.tab(0, text="日報データ明細 (0件)")
+            self.detail_notebook.tab(1, text="購入品明細 (0件)")
+            self.detail_notebook.tab(2, text="外注加工明細 (0件)")
+            self.detail_notebook.tab(4, text="制作伝票明細 (0件)")
+            if hasattr(self, "detail_frame"):
+                self.detail_frame.configure(text="選択した管理Noの内訳明細")
+            if hasattr(self, "detail_bar_info_var"):
+                self.detail_bar_info_var.set("一覧から管理Noを選択すると内訳明細が表示されます（Excel出力・印刷対応）")
 
     def _recalculate_from_loaded_data(self):
         """読み込み済みデータと現在の作業コード設定から全管理Noの集計データを再構築する"""
@@ -8892,6 +9031,7 @@ class DenpyoHubApp:
         self.seizo_by_kno = bundle["seizo_by_kno"]
         self.aggregated_rows = bundle["aggregated_rows"]
         self.apply_filter_and_refresh()
+        self._refresh_current_detail_if_selected()
         self.status_var.set(
             f"集計完了: 全管理No {len(self.aggregated_rows):,} 件 "
             f"(日報: {len(self.raw_daily):,} 行 / 購入品: {len(self.raw_kounyu):,} 行 / "
@@ -9021,18 +9161,14 @@ class DenpyoHubApp:
                     "単位": rec.get("単位", ""),
                 }
 
-        # (C) 購入品データ集計（Q列: 金額 単価X必要数）
+        # (C) 購入品データ集計（Q列: 金額 単価X必要数、空欄時はM×N補完）
         kounyu_sums = defaultdict(float)
         for r in raw_kounyu:
             kno = normalize_kanri_no(r.get("A"))
             if not kno or kno == "管理No":
                 continue
             all_knos.add(kno)
-            q_val = r.get("Q")
-            if q_val is not None and str(q_val).strip() != "":
-                amount = to_float(q_val, 0.0)
-            else:
-                amount = float(int(to_float(r.get("M"), 0.0) * to_float(r.get("N"), 0.0)))
+            amount = _calc_kounyu_row_amount(r)
             kounyu_sums[kno] += amount
             kounyu_by_kno[kno].append(r)
 
@@ -9046,18 +9182,14 @@ class DenpyoHubApp:
                     "単位": "",
                 }
 
-        # (D) 外注加工データ集計（Q列: 金額 単価X必要数）
+        # (D) 外注加工データ集計（Q列: 金額 単価X必要数、空欄時はM×N補完）
         gaichu_sums = defaultdict(float)
         for r in raw_gaichu:
             kno = normalize_kanri_no(r.get("A"))
             if not kno or kno == "管理No":
                 continue
             all_knos.add(kno)
-            q_val = r.get("Q")
-            if q_val is not None and str(q_val).strip() != "":
-                amount = to_float(q_val, 0.0)
-            else:
-                amount = float(int(to_float(r.get("M"), 0.0) * to_float(r.get("N"), 0.0)))
+            amount = _calc_kounyu_row_amount(r)
             gaichu_sums[kno] += amount
             gaichu_by_kno[kno].append(r)
 
@@ -9688,7 +9820,7 @@ class DenpyoHubApp:
         k_list = self.kounyu_by_kno.get(kno, [])
         k_total_yen = 0
         for i, r in enumerate(k_list):
-            q_num = to_float(r.get("Q"), 0.0)
+            q_num = _calc_kounyu_row_amount(r)
             k_total_yen += int(round(q_num))
             m_num = to_float(r.get("M"), 0.0)
             vals = (
@@ -9714,7 +9846,7 @@ class DenpyoHubApp:
         g_list = self.gaichu_by_kno.get(kno, [])
         g_total_yen = 0
         for i, r in enumerate(g_list):
-            q_num = to_float(r.get("Q"), 0.0)
+            q_num = _calc_kounyu_row_amount(r)
             g_total_yen += int(round(q_num))
             m_num = to_float(r.get("M"), 0.0)
             vals = (
@@ -9943,12 +10075,14 @@ class DenpyoHubApp:
         rows = []
         is_yen_mode = (unit == "金額(円)")
         totals = {c: 0.0 for c in CALC_COLUMNS}
+        rates_tuple = self._get_rates_tuple()
+        get_w = self._get_work_numeric_val
 
         for r in export_source:
             if is_yen_mode:
                 row_sub_yen = 0
                 for c in WORK_CATEGORIES:
-                    yen_v = int(round(self._get_work_numeric_val(r, c)))
+                    yen_v = int(round(get_w(r, c, rates_tuple=rates_tuple, unit=unit)))
                     totals[c] += yen_v
                     row_sub_yen += yen_v
                 totals["作業小計"] += row_sub_yen
@@ -9959,12 +10093,12 @@ class DenpyoHubApp:
             for c in COST_YEN_COLUMNS:
                 totals[c] += r.get(c, 0.0)
             for c in DERIVED_YEN_COLUMNS:
-                totals[c] += self._get_work_numeric_val(r, c)
+                totals[c] += get_w(r, c, rates_tuple=rates_tuple, unit=unit)
 
             row_vals = []
             for col in src_cols:
                 if col in RATE_DEPENDENT_COLUMNS:
-                    row_vals.append(self._get_work_numeric_val(r, col))
+                    row_vals.append(get_w(r, col, rates_tuple=rates_tuple, unit=unit))
                 elif col in COST_YEN_COLUMNS:
                     row_vals.append(int(round(r.get(col, 0.0))))
                 else:
@@ -10127,7 +10261,7 @@ class DenpyoHubApp:
             for r in src_list:
                 m_raw = r.get("M", "")
                 n_raw = r.get("N", "")
-                q_num = to_float(r.get("Q"), 0.0)
+                q_num = _calc_kounyu_row_amount(r)
                 n_num = to_float(n_raw, 0.0) if str(n_raw).strip() != "" else 0.0
                 sum_qty += n_num
                 sum_amt += int(round(q_num))

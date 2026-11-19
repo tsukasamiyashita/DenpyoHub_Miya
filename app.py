@@ -74,7 +74,7 @@ WORK_CATEGORIES = [
     "その他作業",
 ]
 
-# 制作伝票（個別Excel）から追加抽出する項目列
+# 制作伝票（個別Excel）および自動算出で追加する項目列
 SEIZO_COLUMNS = [
     "調整用",
     "材料費１(型鋼)",
@@ -87,9 +87,36 @@ SEIZO_COLUMNS = [
     "材料費計",
     "設計費",
     "小計1",
+    "消耗品費(6%)",
+    "重機、運搬費",
+    "車両、交通費",
+    "出張費",
+    "管理費",
+    "小計2",
+    "小計1+小計2",
+    "諸経費(8%)",
+    "合計",
+    "合計/数量",
+    "調整額",
+    "総請求金額",
+    "総請求金額/数量",
 ]
-SEIZO_COST_COLUMNS = tuple(c for c in SEIZO_COLUMNS if c != "小計1")
+# 作業費小計（単価レート連動・円換算）等から動的算出する常に円表示の列
+DERIVED_YEN_COLUMNS = (
+    "小計1",
+    "消耗品費(6%)",
+    "管理費",
+    "小計2",
+    "小計1+小計2",
+    "諸経費(8%)",
+    "合計",
+    "合計/数量",
+    "調整額",
+    "総請求金額/数量",
+)
+SEIZO_COST_COLUMNS = tuple(c for c in SEIZO_COLUMNS if c not in DERIVED_YEN_COLUMNS)
 COST_YEN_COLUMNS = {"購入品", "外注加工", "購入品小計"} | set(SEIZO_COST_COLUMNS)
+RATE_DEPENDENT_COLUMNS = set(WORK_CATEGORIES) | {"作業小計"} | set(DERIVED_YEN_COLUMNS)
 
 # 算出列の順序（デフォルト）
 CALC_COLUMNS = [
@@ -121,8 +148,40 @@ BASE_COLUMNS = [
     "請求完了日",
 ]
 
+# 小計1・小計2を構成する内訳列（デフォルトでは非表示にし、ボタンで展開・折りたたみ可能）
+SUBTOTAL1_DETAIL_COLUMNS = (
+    "作業時間",
+    "移動時間",
+    "修理改造時間",
+    "設計関係",
+    "その他作業",
+    "作業小計",
+    "購入品",
+    "外注加工",
+    "購入品小計",
+    "調整用",
+    "材料費１(型鋼)",
+    "材料費２(鉄板)",
+    "材料費３(コラム)",
+    "その他材料費(31行)",
+    "その他材料費(32行)",
+    "その他材料費(33行)",
+    "切断材料",
+    "材料費計",
+    "設計費",
+)
+SUBTOTAL2_DETAIL_COLUMNS = (
+    "消耗品費(6%)",
+    "重機、運搬費",
+    "車両、交通費",
+    "出張費",
+    "管理費",
+)
+DEFAULT_HIDDEN_COLUMNS = set(SUBTOTAL1_DETAIL_COLUMNS) | set(SUBTOTAL2_DETAIL_COLUMNS) | {"備考"}
+
 # 利用可能な全列（デフォルト表示順は BASE_COLUMNS + CALC_COLUMNS、オプションで「備考」も追加可能）
 DEFAULT_COLUMN_ORDER = BASE_COLUMNS + CALC_COLUMNS
+DEFAULT_VISIBLE_COLUMNS = [c for c in DEFAULT_COLUMN_ORDER if c not in DEFAULT_HIDDEN_COLUMNS]
 ALL_AVAILABLE_COLUMNS = BASE_COLUMNS + CALC_COLUMNS + ["備考"]
 
 NUMERIC_COLUMNS = set(CALC_COLUMNS) | {"数量"}
@@ -162,6 +221,19 @@ DEFAULT_COL_WIDTHS = {
     "材料費計": 114,
     "設計費": 110,
     "小計1": 124,
+    "消耗品費(6%)": 138,
+    "重機、運搬費": 138,
+    "車両、交通費": 138,
+    "出張費": 110,
+    "管理費": 114,
+    "小計2": 124,
+    "小計1+小計2": 132,
+    "諸経費(8%)": 128,
+    "合計": 124,
+    "合計/数量": 124,
+    "調整額": 118,
+    "総請求金額": 130,
+    "総請求金額/数量": 146,
 }
 
 # 制作伝票項目の共通見出し（常に円表示）
@@ -177,6 +249,19 @@ SEIZO_DISPLAY_LABELS = {
     "材料費計": "材料費計(円)",
     "設計費": "設計費(円)",
     "小計1": "小計1(円)",
+    "消耗品費(6%)": "消耗品費(6%)(円)",
+    "重機、運搬費": "重機、運搬費(円)",
+    "車両、交通費": "車両、交通費(円)",
+    "出張費": "出張費(円)",
+    "管理費": "管理費(円)",
+    "小計2": "小計2(円)",
+    "小計1+小計2": "小計1+小計2(円)",
+    "諸経費(8%)": "諸経費(8%)(円)",
+    "合計": "合計(円)",
+    "合計/数量": "合計/数量(円)",
+    "調整額": "調整額(円)",
+    "総請求金額": "総請求金額(円)",
+    "総請求金額/数量": "総請求金額/数量(円)",
 }
 
 # 表示単位ごとの見出し表記マッピング（内部キーは変えずに画面見出しと出力見出しを分かりやすく変換）
@@ -749,9 +834,9 @@ def col_index_to_letter(idx: int) -> str:
 
 def expand_seizo_excel_files(paths: list) -> list:
     """
-    制作伝票用のフォルダ・ファイル指定リストから、サブフォルダを含むすべての
-    .xls / .xlsx / .xlsm ファイル一覧を再帰的に展開する。
-    一時ロックファイル（~$...）や隠しシステムフォルダは除外し、重複を排除する。
+    制作伝票用のフォルダ・ファイル指定リストから、指定フォルダ直下にある
+    .xls / .xlsx / .xlsm ファイル一覧を展開する（サブフォルダは含まない）。
+    一時ロックファイル（~$...）は除外し、重複を排除する。
     """
     result = []
     seen = set()
@@ -773,10 +858,13 @@ def expand_seizo_excel_files(paths: list) -> list:
             continue
         if os.path.isdir(p):
             try:
-                for root_dir, dirs, files in os.walk(p):
-                    dirs[:] = sorted(d for d in dirs if not d.startswith("."))
-                    for fname in sorted(files):
-                        add_if_excel(os.path.join(root_dir, fname))
+                entries = sorted(os.scandir(p), key=lambda e: e.name.lower())
+                for entry in entries:
+                    try:
+                        if entry.is_file():
+                            add_if_excel(entry.path)
+                    except Exception:
+                        pass
             except Exception:
                 pass
         elif os.path.isfile(p):
@@ -785,37 +873,32 @@ def expand_seizo_excel_files(paths: list) -> list:
 
 
 def expand_seizo_protected_dirs(paths: list) -> set:
-    """制作伝票フォルダおよびその全サブフォルダの正規化絶対パス集合（書き込み禁止対象）を返す"""
+    """制作伝票フォルダの正規化絶対パス集合（書き込み禁止対象）を返す"""
     protected_dirs = set()
     for p in (paths or []):
         if not p:
             continue
-        norm_p = os.path.normcase(os.path.abspath(os.path.normpath(p)))
         if os.path.isdir(p):
-            protected_dirs.add(norm_p)
-            try:
-                for root_dir, dirs, _ in os.walk(p):
-                    protected_dirs.add(os.path.normcase(os.path.abspath(os.path.normpath(root_dir))))
-                    for d in dirs:
-                        protected_dirs.add(os.path.normcase(os.path.abspath(os.path.normpath(os.path.join(root_dir, d)))))
-            except Exception:
-                pass
+            protected_dirs.add(os.path.normcase(os.path.abspath(os.path.normpath(p))))
     return protected_dirs
 
 
 def summarize_seizo_folder_mtime(folder_paths: list) -> str:
-    """制作伝票フォルダ（サブフォルダ含む）内の対象Excelファイル数と最新更新日時を返す"""
+    """制作伝票フォルダ直下（サブフォルダ除く・複数フォルダ対応）の対象Excelファイル数と最新更新日時を返す"""
     if not folder_paths:
         return "未選択"
     missing_folders = [p for p in folder_paths if p and not os.path.exists(p)]
     excel_files = expand_seizo_excel_files(folder_paths)
+    folder_cnt = len([p for p in folder_paths if p])
     if not excel_files:
         if missing_folders:
             return "フォルダが見つかりません"
-        return "フォルダ・サブフォルダ内に対象Excelなし"
+        return f"フォルダ直下に対象Excelなし ({folder_cnt}フォルダ)" if folder_cnt > 1 else "フォルダ直下に対象Excelなし"
     latest_ts = max(os.path.getmtime(p) for p in excel_files)
     latest_str = datetime.datetime.fromtimestamp(latest_ts).strftime("%Y/%m/%d %H:%M:%S")
-    return f"最新更新: {latest_str} (Excel {len(excel_files):,}ファイル・サブフォルダ含)"
+    if folder_cnt > 1:
+        return f"最新更新: {latest_str} ({folder_cnt}フォルダ / Excel {len(excel_files):,}ファイル)"
+    return f"最新更新: {latest_str} (Excel {len(excel_files):,}ファイル)"
 
 
 def _read_seizo_cells_xml(filepath: str, raw_bytes: bytes, cancel_check=None) -> tuple:
@@ -1124,6 +1207,11 @@ def read_seizo_denpyo_sheet(filepath: str, cancel_check=None, base_folders: list
     raw_36 = cell(36, "O") if cell(36, "O") != "" else cell(36, "Q")
     v_36 = to_float(raw_36, 0.0)
     sheet_sub1 = to_float(cell(38, "I"), 0.0)
+    v_aa17 = to_float(cell(17, "AA"), 0.0)
+    v_aa18 = to_float(cell(18, "AA"), 0.0)
+    v_aa19 = to_float(cell(19, "AA"), 0.0)
+    v_aa30 = to_float(cell(30, "AA"), 0.0)
+    v_ad9 = to_float(cell(9, "AD"), 0.0)
 
     src_display = os.path.basename(filepath)
     if base_folders:
@@ -1152,6 +1240,11 @@ def read_seizo_denpyo_sheet(filepath: str, cancel_check=None, base_folders: list
         "切断材料": v_34,
         "材料費計": v_35,
         "設計費": v_36,
+        "重機、運搬費": v_aa17,
+        "車両、交通費": v_aa18,
+        "出張費": v_aa19,
+        "総請求金額": v_aa30,
+        "_制作伝票数量": v_ad9,
         "_シート小計1": sheet_sub1,
         "_specs": {
             31: cell(31, "B") or "ヘルテン",
@@ -1371,7 +1464,7 @@ def is_same_or_protected_path(target_path: str, protected_paths: set, protected_
 
 def _header_style_kind(h_text: str) -> str:
     """表示単位付き見出しからExcelヘッダースタイル種別を判定する"""
-    if "小計" in h_text or "材料費計" in h_text:
+    if "小計" in h_text or "材料費計" in h_text or "合計" in h_text or "総請求金額" in h_text:
         return "subtotal"
     if h_text in WORK_CATEGORIES or any(
         k in h_text
@@ -1379,16 +1472,25 @@ def _header_style_kind(h_text: str) -> str:
     ):
         return "work"
     if h_text in ("購入品", "外注加工") or any(
-        k in h_text for k in ("購入品費", "外注加工費", "調整用", "材料費", "切断材料", "設計費")
+        k in h_text
+        for k in ("購入品費", "外注加工費", "調整用", "材料費", "切断材料", "設計費", "消耗品費", "重機、運搬費", "車両、交通費", "出張費", "管理費", "諸経費", "調整額")
     ):
         return "cost"
     return "base"
 
 
-def export_to_xlsx(filepath: str, headers: list, rows: list, numeric_col_indices: set, totals_row: list = None, protected_paths: set = None):
+def export_to_xlsx(
+    filepath: str,
+    headers: list,
+    rows: list,
+    numeric_col_indices: set,
+    totals_row: list = None,
+    protected_paths: set = None,
+    col_groups: list = None,
+):
     """
     集計結果をExcel(.xlsx)に出力する。
-    openpyxlがインストールされていればスタイル・オートフィルタ・合計行付きで出力し、
+    openpyxlがインストールされていればスタイル・オートフィルタ・合計行・列グループ化付きで出力し、
     未インストール環境でも標準ライブラリのみで正しい.xlsxを生成する。
     参照元ファイルへの上書きは厳重にブロックする。
     """
@@ -1481,7 +1583,50 @@ def export_to_xlsx(filepath: str, headers: list, rows: list, numeric_col_indices
                 [len(str(headers[col_idx - 1])) * 2 + 2]
                 + [len(str(r[col_idx - 1])) for r in rows[:300]]
             )
-            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 11), 44)
+            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 11), 42)
+
+        # 列グループ化（小計1・小計2の内訳列をデフォルトで折りたたみ、右隣の小計列上に「+」を表示）
+        if col_groups:
+            ws.sheet_properties.outlinePr.summaryRight = True
+            for start_c, end_c in col_groups:
+                if 1 <= start_c <= end_c <= len(headers):
+                    ws.column_dimensions.group(
+                        get_column_letter(start_c),
+                        get_column_letter(end_c),
+                        outline_level=1,
+                        hidden=True,
+                    )
+
+        # 印刷レイアウト設定（A4横・全列1ページ収め・見出し行繰り返し・ヘッダー/フッター・ページレイアウト表示）
+        # 列グループの表示/非表示（折りたたみ/展開）に自動適応して印刷される
+        total_last_row = last_data_row + (1 if totals_row else 0)
+        ws.page_setup.paperSize = ws.PAPERSIZE_A4
+        ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.page_margins.top = 0.55
+        ws.page_margins.bottom = 0.55
+        ws.page_margins.left = 0.32
+        ws.page_margins.right = 0.32
+        ws.page_margins.header = 0.24
+        ws.page_margins.footer = 0.24
+        ws.print_options.horizontalCentered = True
+        if len(headers) >= 1 and total_last_row >= 1:
+            ws.print_area = f"A1:{get_column_letter(len(headers))}{total_last_row}"
+            ws.print_title_rows = "1:1"
+        ws.oddHeader.left.text = "制作伝票一覧（DenpyoHub_Miya）"
+        ws.oddHeader.left.size = 11
+        ws.oddHeader.left.font = "Yu Gothic UI,Bold"
+        ws.oddHeader.right.text = "出力日時: &D &T"
+        ws.oddHeader.right.size = 9
+        ws.oddFooter.right.text = "&P / &N ページ"
+        ws.oddFooter.right.size = 9
+        try:
+            ws.views.sheetView[0].view = "pageLayout"
+            ws.views.sheetView[0].zoomScale = 85
+        except Exception:
+            pass
 
         wb.save(filepath)
         return
@@ -1503,9 +1648,28 @@ def export_to_xlsx(filepath: str, headers: list, rows: list, numeric_col_indices
     if totals_row:
         all_rows.append(totals_row)
 
+    grouped_col_set = set()
+    for start_c, end_c in (col_groups or []):
+        for c_num in range(start_c, end_c + 1):
+            if 1 <= c_num <= len(headers):
+                grouped_col_set.add(c_num)
+
+    cols_xml = ""
+    if headers:
+        col_elems = []
+        for c_num in range(1, len(headers) + 1):
+            if c_num in grouped_col_set:
+                col_elems.append(f'<col min="{c_num}" max="{c_num}" width="14" customWidth="1" outlineLevel="1" hidden="1"/>')
+            else:
+                col_elems.append(f'<col min="{c_num}" max="{c_num}" width="15" customWidth="1"/>')
+        cols_xml = "<cols>" + "".join(col_elems) + "</cols>"
+
     sheet_lines = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+        '<sheetPr><outlinePr summaryRight="1"/><pageSetUpPr fitToPage="1"/></sheetPr>',
+        '<sheetViews><sheetView tabSelected="1" view="pageLayout" zoomScale="85" workbookViewId="0"/></sheetViews>',
+        cols_xml,
         "<sheetData>",
     ]
     for r_i, r_data in enumerate(all_rows, 1):
@@ -1519,14 +1683,33 @@ def export_to_xlsx(filepath: str, headers: list, rows: list, numeric_col_indices
                 text_escaped = escape(str(val if val is not None else ""))
                 sheet_lines.append(f'<c r="{ref}" t="inlineStr"><is><t>{text_escaped}</t></is></c>')
         sheet_lines.append("</row>")
-    sheet_lines.append("</sheetData></worksheet>")
+    sheet_lines.append("</sheetData>")
+    sheet_lines.append('<printOptions horizontalCentered="1"/>')
+    sheet_lines.append('<pageMargins left="0.32" right="0.32" top="0.55" bottom="0.55" header="0.24" footer="0.24"/>')
+    sheet_lines.append('<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>')
+    sheet_lines.append(
+        "<headerFooter>"
+        '<oddHeader>&amp;L&amp;"Yu Gothic UI,Bold"&amp;11制作伝票一覧（DenpyoHub_Miya）&amp;R&amp;"Yu Gothic UI"&amp;9出力日時: &amp;D &amp;T</oddHeader>'
+        '<oddFooter>&amp;R&amp;"Yu Gothic UI"&amp;9&amp;P / &amp;N ページ</oddFooter>'
+        "</headerFooter>"
+    )
+    sheet_lines.append("</worksheet>")
+
+    last_col_letter = col_name(max(0, len(headers) - 1))
+    last_row_num = max(1, len(all_rows))
+    defined_names_xml = (
+        "<definedNames>"
+        f'<definedName name="_xlnm.Print_Titles" localSheetId="0">\'制作伝票一覧\'!$1:$1</definedName>'
+        f'<definedName name="_xlnm.Print_Area" localSheetId="0">\'制作伝票一覧\'!$A$1:${last_col_letter}${last_row_num}</definedName>'
+        "</definedNames>"
+    )
 
     with zipfile.ZipFile(filepath, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             "[Content_Types].xml",
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.relationships+xml"/>'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
             '<Default Extension="xml" ContentType="application/xml"/>'
             '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
             '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
@@ -1552,6 +1735,7 @@ def export_to_xlsx(filepath: str, headers: list, rows: list, numeric_col_indices
             '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
             'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
             '<sheets><sheet name="制作伝票一覧" sheetId="1" r:id="rId1"/></sheets>'
+            f"{defined_names_xml}"
             "</workbook>",
         )
         zf.writestr("xl/worksheets/sheet1.xml", "".join(sheet_lines))
@@ -1563,6 +1747,7 @@ def open_in_excel_new_workbook(
     numeric_col_indices: set,
     totals_row: list = None,
     protected_paths: set = None,
+    col_groups: list = None,
 ):
     """
     集計結果を保存ファイルではなくExcelの新規ブック（未保存ブック）として開く。
@@ -1662,10 +1847,30 @@ def open_in_excel_new_workbook(
                     tot_rng.Font.Bold = True
                     tot_rng.Interior.Color = rgb_to_bgr(224, 242, 254)
 
-                # 罫線・オートフィルタ・枠固定・列幅自動調整
+                # 罫線・フォント・行高さ・オートフィルタ・列幅自動調整
                 full_rng = ws.Range(ws.Cells(1, 1), ws.Cells(n_rows, n_cols))
+                try:
+                    full_rng.Font.Name = "Yu Gothic UI"
+                    full_rng.Font.Size = 9.5
+                    full_rng.VerticalAlignment = -4108  # xlCenter
+                    ws.Rows(1).RowHeight = 26
+                    hdr_rng.WrapText = True
+                    if n_rows >= 2:
+                        ws.Range(ws.Rows(2), ws.Rows(n_rows)).RowHeight = 19
+                    if totals_row:
+                        ws.Rows(n_rows).RowHeight = 22
+                except Exception:
+                    pass
                 full_rng.Borders.LineStyle = 1  # xlContinuous
                 full_rng.Borders.Color = rgb_to_bgr(203, 213, 225)
+                if totals_row:
+                    try:
+                        # 合計行の上罫線を濃い線の二重線/中太線にして視認性を高める
+                        tot_top_border = ws.Range(ws.Cells(n_rows, 1), ws.Cells(n_rows, n_cols)).Borders(8)  # xlEdgeTop
+                        tot_top_border.LineStyle = -4119  # xlDouble
+                        tot_top_border.Color = rgb_to_bgr(37, 99, 235)
+                    except Exception:
+                        pass
                 last_data_r = n_rows - 1 if totals_row else n_rows
                 if last_data_r >= 1:
                     ws.Range(ws.Cells(1, 1), ws.Cells(last_data_r, n_cols)).AutoFilter()
@@ -1674,15 +1879,65 @@ def open_in_excel_new_workbook(
                     ws.Columns.AutoFit()
                     for c_idx in range(1, n_cols + 1):
                         cur_w = ws.Columns(c_idx).ColumnWidth
-                        ws.Columns(c_idx).ColumnWidth = min(max(cur_w + 2, 10), 48)
+                        ws.Columns(c_idx).ColumnWidth = min(max(cur_w + 2, 10), 42)
                 except Exception:
                     pass
 
+                # 列グループ化（小計1・小計2の内訳列をグループ化し、デフォルトで折りたたむ）
+                # 折りたたまれた非表示列は印刷対象から自動で除外され、展開すると印刷にも自動反映される
+                if col_groups:
+                    try:
+                        ws.Outline.SummaryColumn = 1  # xlSummaryOnRight（右隣の小計列上に「+」ボタンを配置）
+                        for start_c, end_c in col_groups:
+                            if 1 <= start_c <= end_c <= n_cols:
+                                ws.Range(ws.Columns(start_c), ws.Columns(end_c)).Group()
+                        ws.Outline.ShowLevels(ColumnLevels=1)
+                    except Exception:
+                        pass
+
+                # 印刷ページ設定（A4横・全列1ページ収め・見出し行繰り返し・余白・ヘッダー/フッター）
                 try:
-                    excel.ActiveWindow.SplitRow = 1
-                    excel.ActiveWindow.FreezePanes = True
+                    try:
+                        excel.PrintCommunication = False
+                    except Exception:
+                        pass
+                    ps = ws.PageSetup
+                    ps.PaperSize = 9       # xlPaperA4
+                    ps.Orientation = 2     # xlLandscape (横向き)
+                    ps.Zoom = False
+                    ps.FitToPagesWide = 1  # 横方向は全列を1ページに収める
+                    ps.FitToPagesTall = False
+                    ps.TopMargin = excel.InchesToPoints(0.55)
+                    ps.BottomMargin = excel.InchesToPoints(0.55)
+                    ps.LeftMargin = excel.InchesToPoints(0.32)
+                    ps.RightMargin = excel.InchesToPoints(0.32)
+                    ps.HeaderMargin = excel.InchesToPoints(0.24)
+                    ps.FooterMargin = excel.InchesToPoints(0.24)
+                    ps.CenterHorizontally = True
+                    ps.CenterVertically = False
+                    ps.PrintArea = ws.Range(ws.Cells(1, 1), ws.Cells(n_rows, n_cols)).Address
+                    ps.PrintTitleRows = "$1:$1"
+                    ps.LeftHeader = '&"Yu Gothic UI,Bold"&11制作伝票一覧（DenpyoHub_Miya）'
+                    ps.RightHeader = '&"Yu Gothic UI"&9出力日時: &D &T'
+                    ps.RightFooter = '&"Yu Gothic UI"&9&P / &N ページ'
                 except Exception:
                     pass
+                finally:
+                    try:
+                        excel.PrintCommunication = True
+                    except Exception:
+                        pass
+
+                # 印刷レイアウト表示（ページレイアウトビュー）で開く
+                try:
+                    excel.ActiveWindow.View = 3  # xlPageLayoutView
+                    excel.ActiveWindow.Zoom = 85
+                except Exception:
+                    try:
+                        excel.ActiveWindow.SplitRow = 1
+                        excel.ActiveWindow.FreezePanes = True
+                    except Exception:
+                        pass
                 return
             finally:
                 if excel is not None:
@@ -1706,6 +1961,7 @@ def open_in_excel_new_workbook(
         numeric_col_indices,
         totals_row=totals_row,
         protected_paths=protected_paths,
+        col_groups=col_groups,
     )
     if sys.platform == "win32":
         os.startfile(tmp_path)
@@ -1811,6 +2067,411 @@ class FileListDialog(tk.Toplevel):
 
     def _ok(self):
         self.on_apply(self.paths)
+        self.destroy()
+
+
+class SeizoFolderDialog(tk.Toplevel):
+    """制作伝票フォルダの複数選択・管理および検出済みExcel一覧ダイアログ（各フォルダ直下のみ参照）"""
+
+    def __init__(self, parent, current_folders: list, on_apply, initial_tab: int = 0):
+        super().__init__(parent)
+        self.title("制作伝票フォルダ 複数選択・管理（各フォルダ直下のExcelのみ参照）")
+        self.geometry("920x660")
+        self.minsize(740, 520)
+        self.configure(bg=COLORS["bg_card"])
+        self.transient(parent)
+        self.grab_set()
+
+        self.on_apply = on_apply
+        self.selected_folders = []
+        self._selected_key_set = set()
+        for p in (current_folders or []):
+            self._add_folder_internal(p)
+
+        # 初期表示する基準フォルダを決定（既存選択があればその親フォルダ、なければアプリ基準フォルダ）
+        init_base = get_base_dir()
+        for p in self.selected_folders:
+            if os.path.isdir(p):
+                parent_dir = os.path.dirname(os.path.abspath(p))
+                if parent_dir and os.path.isdir(parent_dir):
+                    init_base = parent_dir
+                else:
+                    init_base = os.path.abspath(p)
+                break
+        self.base_dir_var = tk.StringVar(value=init_base)
+        self.filter_var = tk.StringVar(value="")
+        self.summary_var = tk.StringVar(value="")
+        self._browser_rows = []  # list of (full_path, disp_name, excel_count, is_self)
+
+        frame = ttk.Frame(self, style="Card.TFrame", padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        # 最下部フッターを最優先で固定配置（見切れ防止）
+        ftr = ttk.Frame(frame, style="Flat.TFrame")
+        ftr.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+        ttk.Label(ftr, textvariable=self.summary_var, style="Mtime.TLabel").pack(side=tk.LEFT)
+        ttk.Button(ftr, text="保存して適用", style="Primary.TButton", command=self._apply).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(ftr, text="キャンセル", command=self.destroy).pack(side=tk.RIGHT)
+
+        # 上部：親フォルダから複数フォルダをチェック選択するブラウザエリア
+        browser_box = ttk.LabelFrame(
+            frame,
+            text="フォルダ一覧から複数チェック選択（クリックでON/OFF・ダブルクリックで中へ移動・各フォルダ直下のExcelのみ対象）",
+            padding=(8, 6),
+        )
+        browser_box.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        nav_row = ttk.Frame(browser_box, style="Flat.TFrame")
+        nav_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(nav_row, text="基準フォルダ:", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 4))
+        ent_base = ttk.Entry(nav_row, textvariable=self.base_dir_var, state="readonly")
+        ent_base.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        ttk.Button(nav_row, text="基準フォルダを変更...", command=self._choose_base_dir).pack(side=tk.LEFT, padx=2)
+        ttk.Button(nav_row, text="↑ 上の階層へ", command=self._go_parent_dir).pack(side=tk.LEFT, padx=2)
+
+        act_row = ttk.Frame(browser_box, style="Flat.TFrame")
+        act_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(act_row, text="フォルダ名絞り込み:", style="Card.TLabel").pack(side=tk.LEFT, padx=(0, 4))
+        ent_flt = ttk.Entry(act_row, textvariable=self.filter_var, width=24)
+        ent_flt.pack(side=tk.LEFT, padx=(0, 6))
+        ent_flt.bind("<KeyRelease>", lambda e: self._refresh_browser_tree())
+        ttk.Button(act_row, text="クリア", width=6, command=self._clear_filter).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(act_row, text="Excelありフォルダを全チェック", command=self._check_all_with_excel).pack(side=tk.LEFT, padx=2)
+        ttk.Button(act_row, text="表示中を全チェック", command=self._check_all_visible).pack(side=tk.LEFT, padx=2)
+        ttk.Button(act_row, text="表示中のチェック解除", command=self._uncheck_all_visible).pack(side=tk.LEFT, padx=2)
+
+        b_tv_frame = ttk.Frame(browser_box, style="Card.TFrame")
+        b_tv_frame.pack(fill=tk.BOTH, expand=True)
+        self.browser_tv = ttk.Treeview(
+            b_tv_frame,
+            columns=("選択", "フォルダ名", "直下Excel数", "フルパス"),
+            show="headings",
+            height=8,
+            selectmode="browse",
+        )
+        b_vsb = ttk.Scrollbar(b_tv_frame, orient=tk.VERTICAL, command=self.browser_tv.yview)
+        b_hsb = ttk.Scrollbar(b_tv_frame, orient=tk.HORIZONTAL, command=self.browser_tv.xview)
+        self.browser_tv.configure(yscrollcommand=b_vsb.set, xscrollcommand=b_hsb.set)
+        self.browser_tv.grid(row=0, column=0, sticky=tk.NSEW)
+        b_vsb.grid(row=0, column=1, sticky=tk.NS)
+        b_hsb.grid(row=1, column=0, sticky=tk.EW)
+        b_tv_frame.rowconfigure(0, weight=1)
+        b_tv_frame.columnconfigure(0, weight=1)
+
+        self.browser_tv.heading("選択", text="選択")
+        self.browser_tv.heading("フォルダ名", text="フォルダ名")
+        self.browser_tv.heading("直下Excel数", text="直下Excel数")
+        self.browser_tv.heading("フルパス", text="フルパス")
+        self.browser_tv.column("選択", width=52, anchor=tk.CENTER, stretch=False)
+        self.browser_tv.column("フォルダ名", width=250, anchor=tk.W)
+        self.browser_tv.column("直下Excel数", width=96, anchor=tk.E, stretch=False)
+        self.browser_tv.column("フルパス", width=430, anchor=tk.W)
+
+        self.browser_tv.bind("<ButtonRelease-1>", self._on_browser_click)
+        self.browser_tv.bind("<Double-1>", self._on_browser_double_click)
+        self.browser_tv.bind("<space>", self._on_browser_space)
+
+        # 下部：選択済みフォルダ一覧 & 検出済みExcelファイル一覧のタブ
+        self.nb = ttk.Notebook(frame)
+        self.nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        tab_folders = ttk.Frame(self.nb, style="Card.TFrame", padding=6)
+        tab_files = ttk.Frame(self.nb, style="Card.TFrame", padding=6)
+        self.nb.add(tab_folders, text="選択中の制作伝票フォルダ (0件)")
+        self.nb.add(tab_files, text="検出されるExcelファイル一覧 (0件)")
+
+        # タブ1：選択済みフォルダ一覧
+        f_btn_bar = ttk.Frame(tab_folders, style="Flat.TFrame")
+        f_btn_bar.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(f_btn_bar, text="別フォルダを1つ追加...", command=self._add_one_folder_dialog).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(f_btn_bar, text="選択フォルダを削除", command=self._remove_selected_folders).pack(side=tk.LEFT, padx=4)
+        ttk.Button(f_btn_bar, text="すべてクリア", command=self._clear_all_folders).pack(side=tk.LEFT, padx=4)
+
+        sel_tv_frame = ttk.Frame(tab_folders, style="Card.TFrame")
+        sel_tv_frame.pack(fill=tk.BOTH, expand=True)
+        self.sel_tv = ttk.Treeview(
+            sel_tv_frame,
+            columns=("フォルダ名", "直下Excel数", "最新更新日時", "フルパス"),
+            show="headings",
+            height=6,
+            selectmode="extended",
+        )
+        s_vsb = ttk.Scrollbar(sel_tv_frame, orient=tk.VERTICAL, command=self.sel_tv.yview)
+        s_hsb = ttk.Scrollbar(sel_tv_frame, orient=tk.HORIZONTAL, command=self.sel_tv.xview)
+        self.sel_tv.configure(yscrollcommand=s_vsb.set, xscrollcommand=s_hsb.set)
+        self.sel_tv.grid(row=0, column=0, sticky=tk.NSEW)
+        s_vsb.grid(row=0, column=1, sticky=tk.NS)
+        s_hsb.grid(row=1, column=0, sticky=tk.EW)
+        sel_tv_frame.rowconfigure(0, weight=1)
+        sel_tv_frame.columnconfigure(0, weight=1)
+
+        self.sel_tv.heading("フォルダ名", text="フォルダ名")
+        self.sel_tv.heading("直下Excel数", text="直下Excel数")
+        self.sel_tv.heading("最新更新日時", text="最新更新日時")
+        self.sel_tv.heading("フルパス", text="フルパス")
+        self.sel_tv.column("フォルダ名", width=180, anchor=tk.W)
+        self.sel_tv.column("直下Excel数", width=92, anchor=tk.E, stretch=False)
+        self.sel_tv.column("最新更新日時", width=150, anchor=tk.CENTER, stretch=False)
+        self.sel_tv.column("フルパス", width=410, anchor=tk.W)
+
+        # タブ2：検出されるExcelファイル一覧
+        ef_tv_frame = ttk.Frame(tab_files, style="Card.TFrame")
+        ef_tv_frame.pack(fill=tk.BOTH, expand=True)
+        self.files_tv = ttk.Treeview(
+            ef_tv_frame,
+            columns=("ファイル名", "所属フォルダ", "更新日時", "フルパス"),
+            show="headings",
+            height=7,
+        )
+        e_vsb = ttk.Scrollbar(ef_tv_frame, orient=tk.VERTICAL, command=self.files_tv.yview)
+        e_hsb = ttk.Scrollbar(ef_tv_frame, orient=tk.HORIZONTAL, command=self.files_tv.xview)
+        self.files_tv.configure(yscrollcommand=e_vsb.set, xscrollcommand=e_hsb.set)
+        self.files_tv.grid(row=0, column=0, sticky=tk.NSEW)
+        e_vsb.grid(row=0, column=1, sticky=tk.NS)
+        e_hsb.grid(row=1, column=0, sticky=tk.EW)
+        ef_tv_frame.rowconfigure(0, weight=1)
+        ef_tv_frame.columnconfigure(0, weight=1)
+
+        self.files_tv.heading("ファイル名", text="ファイル名")
+        self.files_tv.heading("所属フォルダ", text="所属フォルダ")
+        self.files_tv.heading("更新日時", text="更新日時")
+        self.files_tv.heading("フルパス", text="フルパス")
+        self.files_tv.column("ファイル名", width=180, anchor=tk.W)
+        self.files_tv.column("所属フォルダ", width=170, anchor=tk.W)
+        self.files_tv.column("更新日時", width=150, anchor=tk.CENTER, stretch=False)
+        self.files_tv.column("フルパス", width=340, anchor=tk.W)
+
+        self._scan_base_dir()
+        self._refresh_selected_views()
+        if initial_tab in (0, 1):
+            self.nb.select(initial_tab)
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    @staticmethod
+    def _norm_key(path: str) -> str:
+        return os.path.normcase(os.path.abspath(os.path.normpath(path)))
+
+    def _add_folder_internal(self, path: str) -> bool:
+        if not path:
+            return False
+        norm = os.path.normpath(path)
+        key = self._norm_key(norm)
+        if key in self._selected_key_set:
+            return False
+        self._selected_key_set.add(key)
+        self.selected_folders.append(norm)
+        return True
+
+    def _remove_folder_internal(self, path: str) -> bool:
+        key = self._norm_key(path)
+        if key not in self._selected_key_set:
+            return False
+        self._selected_key_set.remove(key)
+        self.selected_folders = [p for p in self.selected_folders if self._norm_key(p) != key]
+        return True
+
+    @staticmethod
+    def _count_direct_excels(folder_path: str) -> int:
+        if not folder_path or not os.path.isdir(folder_path):
+            return 0
+        exts = (".xls", ".xlsx", ".xlsm")
+        cnt = 0
+        try:
+            for entry in os.scandir(folder_path):
+                try:
+                    if entry.is_file() and not entry.name.startswith("~$") and entry.name.lower().endswith(exts):
+                        cnt += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return cnt
+
+    def _choose_base_dir(self):
+        cur = self.base_dir_var.get()
+        init_dir = cur if cur and os.path.isdir(cur) else get_base_dir()
+        folder = filedialog.askdirectory(
+            parent=self,
+            title="制作伝票フォルダが入っている基準（親）フォルダを選択してください",
+            initialdir=init_dir,
+        )
+        if folder:
+            self.base_dir_var.set(os.path.normpath(folder))
+            self._scan_base_dir()
+
+    def _go_parent_dir(self):
+        cur = self.base_dir_var.get()
+        if not cur:
+            return
+        parent_dir = os.path.dirname(os.path.abspath(cur))
+        if parent_dir and parent_dir != os.path.abspath(cur) and os.path.isdir(parent_dir):
+            self.base_dir_var.set(os.path.normpath(parent_dir))
+            self._scan_base_dir()
+
+    def _clear_filter(self):
+        self.filter_var.set("")
+        self._refresh_browser_tree()
+
+    def _scan_base_dir(self):
+        base = self.base_dir_var.get()
+        rows = []
+        if base and os.path.isdir(base):
+            base_norm = os.path.normpath(base)
+            rows.append((base_norm, f"[このフォルダ自体]  {os.path.basename(base_norm) or base_norm}", self._count_direct_excels(base_norm), True))
+            sub_entries = []
+            try:
+                for entry in os.scandir(base_norm):
+                    try:
+                        if entry.is_dir() and not entry.name.startswith("."):
+                            sub_entries.append(entry)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            sub_entries.sort(key=lambda e: e.name.lower())
+            for entry in sub_entries:
+                p_norm = os.path.normpath(entry.path)
+                rows.append((p_norm, entry.name, self._count_direct_excels(p_norm), False))
+        self._browser_rows = rows
+        self._refresh_browser_tree()
+
+    def _get_filtered_browser_rows(self) -> list:
+        kw = normalize_search_text(self.filter_var.get())
+        if not kw:
+            return list(self._browser_rows)
+        tokens = [t for t in kw.split() if t]
+        return [
+            row for row in self._browser_rows
+            if all(t in normalize_search_text(row[1]) for t in tokens)
+        ]
+
+    def _refresh_browser_tree(self):
+        self.browser_tv.delete(*self.browser_tv.get_children())
+        for idx, (fpath, disp, cnt, _is_self) in enumerate(self._get_filtered_browser_rows()):
+            mark = "☑" if self._norm_key(fpath) in self._selected_key_set else "☐"
+            self.browser_tv.insert("", tk.END, iid=str(idx), values=(mark, disp, f"{cnt:,}件", fpath))
+
+    def _toggle_browser_iid(self, iid: str):
+        if not iid:
+            return
+        vals = self.browser_tv.item(iid, "values")
+        if not vals or len(vals) < 4:
+            return
+        fpath = vals[3]
+        if self._norm_key(fpath) in self._selected_key_set:
+            self._remove_folder_internal(fpath)
+            new_mark = "☐"
+        else:
+            self._add_folder_internal(fpath)
+            new_mark = "☑"
+        self.browser_tv.item(iid, values=(new_mark, vals[1], vals[2], fpath))
+        self._refresh_selected_views()
+
+    def _on_browser_click(self, event):
+        region = self.browser_tv.identify_region(event.x, event.y)
+        if region not in ("cell", "tree"):
+            return
+        iid = self.browser_tv.identify_row(event.y)
+        if iid:
+            self._toggle_browser_iid(iid)
+
+    def _on_browser_double_click(self, event):
+        iid = self.browser_tv.identify_row(event.y)
+        if not iid:
+            return
+        vals = self.browser_tv.item(iid, "values")
+        if not vals or len(vals) < 4:
+            return
+        fpath = vals[3]
+        # ダブルクリックでそのフォルダの中へ移動（直前の単クリックによるチェック切替を戻してから移動）
+        if os.path.isdir(fpath) and self._norm_key(fpath) != self._norm_key(self.base_dir_var.get()):
+            self._toggle_browser_iid(iid)
+            self.base_dir_var.set(os.path.normpath(fpath))
+            self.filter_var.set("")
+            self._scan_base_dir()
+
+    def _on_browser_space(self, event):
+        sel = self.browser_tv.selection()
+        if sel:
+            self._toggle_browser_iid(sel[0])
+        return "break"
+
+    def _check_all_with_excel(self):
+        for fpath, _disp, cnt, _is_self in self._get_filtered_browser_rows():
+            if cnt > 0:
+                self._add_folder_internal(fpath)
+        self._refresh_browser_tree()
+        self._refresh_selected_views()
+
+    def _check_all_visible(self):
+        for fpath, _disp, _cnt, _is_self in self._get_filtered_browser_rows():
+            self._add_folder_internal(fpath)
+        self._refresh_browser_tree()
+        self._refresh_selected_views()
+
+    def _uncheck_all_visible(self):
+        for fpath, _disp, _cnt, _is_self in self._get_filtered_browser_rows():
+            self._remove_folder_internal(fpath)
+        self._refresh_browser_tree()
+        self._refresh_selected_views()
+
+    def _add_one_folder_dialog(self):
+        cur = self.base_dir_var.get()
+        init_dir = cur if cur and os.path.isdir(cur) else get_base_dir()
+        folder = filedialog.askdirectory(
+            parent=self,
+            title="追加する制作伝票フォルダを選択してください（直下のExcelのみ参照）",
+            initialdir=init_dir,
+        )
+        if folder:
+            self._add_folder_internal(folder)
+            self._refresh_browser_tree()
+            self._refresh_selected_views()
+
+    def _remove_selected_folders(self):
+        sel = self.sel_tv.selection()
+        if not sel:
+            return
+        for iid in sel:
+            vals = self.sel_tv.item(iid, "values")
+            if vals and len(vals) >= 4:
+                self._remove_folder_internal(vals[3])
+        self._refresh_browser_tree()
+        self._refresh_selected_views()
+
+    def _clear_all_folders(self):
+        self.selected_folders = []
+        self._selected_key_set = set()
+        self._refresh_browser_tree()
+        self._refresh_selected_views()
+
+    def _refresh_selected_views(self):
+        # タブ1：選択済みフォルダ一覧
+        self.sel_tv.delete(*self.sel_tv.get_children())
+        for fp in self.selected_folders:
+            excels = expand_seizo_excel_files([fp])
+            if excels:
+                latest_ts = max(os.path.getmtime(p) for p in excels)
+                latest_str = datetime.datetime.fromtimestamp(latest_ts).strftime("%Y/%m/%d %H:%M:%S")
+            else:
+                latest_str = "対象Excelなし" if os.path.isdir(fp) else "フォルダなし"
+            self.sel_tv.insert("", tk.END, values=(os.path.basename(fp) or fp, f"{len(excels):,}件", latest_str, fp))
+
+        # タブ2：全選択フォルダ直下の検出済みExcelファイル一覧
+        self.files_tv.delete(*self.files_tv.get_children())
+        all_files = expand_seizo_excel_files(self.selected_folders)
+        for ef in all_files:
+            parent_name = os.path.basename(os.path.dirname(ef)) or os.path.dirname(ef)
+            self.files_tv.insert("", tk.END, values=(os.path.basename(ef), parent_name, format_file_mtime(ef), ef))
+
+        self.nb.tab(0, text=f"選択中の制作伝票フォルダ ({len(self.selected_folders):,}件)")
+        self.nb.tab(1, text=f"検出されるExcelファイル一覧 ({len(all_files):,}件)")
+        self.summary_var.set(
+            f"選択中: {len(self.selected_folders):,} フォルダ / 検出Excel: {len(all_files):,} ファイル（各フォルダ直下のみ・すべて読み取り専用で参照）"
+        )
+
+    def _apply(self):
+        self.on_apply(list(self.selected_folders))
         self.destroy()
 
 
@@ -2975,15 +3636,19 @@ class ErrorReportDialog(tk.Toplevel):
 
 
 class HelpDialog(tk.Toplevel):
-    """見やすく整理された目次付き・カード型ヘルプダイアログ"""
+    """見やすく整理された目次付き・カード型ヘルプダイアログ（動的折り返し対応）"""
 
     def __init__(self, parent):
         super().__init__(parent)
         self.title(f"使い方ガイド - {APP_NAME}")
-        self.geometry("920x660")
-        self.minsize(780, 520)
+        self.geometry("1040x720")
+        self.minsize(860, 560)
         self.configure(bg=COLORS["bg_main"])
         self.transient(parent)
+
+        self._wrap_targets = []  # list of (label_widget, ratio_float, subtract_px)
+        self._table_specs = []   # list of (grid_frame, ratios_list, cell_labels_by_col)
+        self._last_canvas_w = 0
 
         # 上部ヘッダー
         hdr = tk.Frame(self, bg=COLORS["accent"], padx=18, pady=12)
@@ -3029,7 +3694,7 @@ class HelpDialog(tk.Toplevel):
         self.inner = tk.Frame(self.canvas, bg=COLORS["bg_card"], padx=20, pady=16)
         self.canvas_win = self.canvas.create_window((0, 0), window=self.inner, anchor=tk.NW)
         self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.canvas_win, width=e.width))
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
         self.bind("<Destroy>", lambda e: self._cleanup_bind())
 
@@ -3060,7 +3725,7 @@ class HelpDialog(tk.Toplevel):
                 font=("Yu Gothic UI", 10),
                 padx=10,
                 pady=7,
-                width=22,
+                width=20,
                 cursor="hand2",
                 command=lambda k=key: self._scroll_to(k),
             )
@@ -3068,6 +3733,42 @@ class HelpDialog(tk.Toplevel):
             self.nav_buttons[key] = btn
 
         self._build_sections()
+        self.after(30, lambda: self._update_wraplengths(max(620, self.canvas.winfo_width())))
+
+    def _on_canvas_configure(self, event):
+        w = max(360, int(event.width))
+        self.canvas.itemconfigure(self.canvas_win, width=w)
+        if abs(w - self._last_canvas_w) >= 4:
+            self._update_wraplengths(w)
+
+    def _update_wraplengths(self, canvas_w: int):
+        self._last_canvas_w = canvas_w
+        content_w = max(340, canvas_w - 44)
+        for lbl, ratio, sub_px in self._wrap_targets:
+            try:
+                if lbl.winfo_exists():
+                    lbl.configure(wraplength=max(120, int(content_w * ratio) - sub_px))
+            except Exception:
+                pass
+        for grid, ratios, col_labels in self._table_specs:
+            try:
+                if not grid.winfo_exists():
+                    continue
+                tbl_w = max(320, content_w - 6)
+                for c_i, r in enumerate(ratios):
+                    col_px = max(46, int(tbl_w * r))
+                    grid.columnconfigure(c_i, weight=max(1, int(round(r * 100))), minsize=col_px)
+                    cell_wrap = max(34, col_px - 18)
+                    for lbl in col_labels[c_i]:
+                        if lbl.winfo_exists():
+                            lbl.configure(wraplength=cell_wrap)
+            except Exception:
+                pass
+        try:
+            self.inner.update_idletasks()
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        except Exception:
+            pass
 
     def _cleanup_bind(self):
         try:
@@ -3126,7 +3827,7 @@ class HelpDialog(tk.Toplevel):
         tk.Frame(self.inner, bg=COLORS["accent_light"], height=2).pack(fill=tk.X, pady=(0, 8))
 
     def _add_paragraph(self, text: str):
-        tk.Label(
+        lbl = tk.Label(
             self.inner,
             text=text,
             bg=COLORS["bg_card"],
@@ -3134,14 +3835,16 @@ class HelpDialog(tk.Toplevel):
             font=("Yu Gothic UI", 10),
             justify=tk.LEFT,
             anchor=tk.W,
-            wraplength=580,
-        ).pack(fill=tk.X, pady=(0, 6))
+            wraplength=700,
+        )
+        lbl.pack(fill=tk.X, pady=(0, 6))
+        self._wrap_targets.append((lbl, 1.0, 4))
 
     def _add_callout(self, title: str, text: str, bg_color: str, border_color: str):
         card = tk.Frame(self.inner, bg=bg_color, highlightbackground=border_color, highlightthickness=1, padx=12, pady=8)
         card.pack(fill=tk.X, pady=(4, 10))
         tk.Label(card, text=title, bg=bg_color, fg=COLORS["fg_main"], font=("Yu Gothic UI", 10, "bold"), anchor=tk.W).pack(fill=tk.X)
-        tk.Label(
+        lbl = tk.Label(
             card,
             text=text,
             bg=bg_color,
@@ -3149,16 +3852,30 @@ class HelpDialog(tk.Toplevel):
             font=("Yu Gothic UI", 9),
             justify=tk.LEFT,
             anchor=tk.W,
-            wraplength=560,
-        ).pack(fill=tk.X, pady=(2, 0))
+            wraplength=670,
+        )
+        lbl.pack(fill=tk.X, pady=(2, 0))
+        self._wrap_targets.append((lbl, 1.0, 30))
 
-    def _add_table(self, headers: list, rows: list):
+    def _add_table(self, headers: list, rows: list, col_ratios: list = None):
+        n_cols = len(headers)
+        if not col_ratios or len(col_ratios) != n_cols:
+            col_ratios = [1.0 / n_cols] * n_cols
+        else:
+            s = sum(col_ratios) or 1.0
+            col_ratios = [r / s for r in col_ratios]
+
         tbl = tk.Frame(self.inner, bg=COLORS["border"], padx=1, pady=1)
         tbl.pack(fill=tk.X, pady=(4, 10))
-        grid = tk.Frame(tbl, bg=COLORS["bg_card"])
+        grid = tk.Frame(tbl, bg=COLORS["border"])
         grid.pack(fill=tk.X)
 
+        col_labels = [[] for _ in range(n_cols)]
+        init_tbl_w = 700
+
         for c_i, h in enumerate(headers):
+            col_px = max(46, int(init_tbl_w * col_ratios[c_i]))
+            anchor_h = tk.CENTER if (c_i == 0 and col_ratios[c_i] <= 0.12) else tk.W
             lbl = tk.Label(
                 grid,
                 text=h,
@@ -3166,53 +3883,65 @@ class HelpDialog(tk.Toplevel):
                 fg=COLORS["accent"],
                 font=("Yu Gothic UI", 9, "bold"),
                 padx=8,
-                pady=5,
-                anchor=tk.W,
+                pady=6,
+                anchor=anchor_h,
+                justify=tk.LEFT,
+                wraplength=max(34, col_px - 18),
             )
-            lbl.grid(row=0, column=c_i, sticky=tk.NSEW, padx=1, pady=1)
-            grid.columnconfigure(c_i, weight=1)
+            lbl.grid(row=0, column=c_i, sticky=tk.NSEW, padx=(0 if c_i == 0 else 1, 0), pady=(0, 1))
+            grid.columnconfigure(c_i, weight=max(1, int(round(col_ratios[c_i] * 100))), minsize=col_px)
+            col_labels[c_i].append(lbl)
 
         for r_i, r_vals in enumerate(rows, 1):
             bg = "#FFFFFF" if r_i % 2 == 1 else COLORS["bg_sub"]
             for c_i, val in enumerate(r_vals):
-                tk.Label(
+                col_px = max(46, int(init_tbl_w * col_ratios[c_i]))
+                anchor_c = tk.N if (c_i == 0 and col_ratios[c_i] <= 0.12) else tk.NW
+                lbl = tk.Label(
                     grid,
                     text=val,
                     bg=bg,
                     fg=COLORS["fg_main"],
                     font=("Yu Gothic UI", 9),
                     padx=8,
-                    pady=4,
-                    anchor=tk.W,
-                ).grid(row=r_i, column=c_i, sticky=tk.NSEW, padx=1, pady=1)
+                    pady=5,
+                    anchor=anchor_c,
+                    justify=tk.LEFT,
+                    wraplength=max(34, col_px - 18),
+                )
+                lbl.grid(row=r_i, column=c_i, sticky=tk.NSEW, padx=(0 if c_i == 0 else 1, 0), pady=(0, 1 if r_i < len(rows) else 0))
+                col_labels[c_i].append(lbl)
+
+        self._table_specs.append((grid, col_ratios, col_labels))
 
     def _build_sections(self):
         # 1. 概要
         self._add_section_header("overview", "STEP 1", "アプリの概要と基本の流れ")
         self._add_paragraph(
             "DenpyoHub_Miya は、日報ファイル(CSV)・購入品(XLSM/XLSX)・外注加工(XLSM/XLSX)・受注表(XLSM/XLSX)および"
-            "制作伝票フォルダ（サブフォルダ含む .xls / .xlsx / .xlsm）を読み込み、管理Noごとに作業時間・金額と購入・外注・材料費用を自動集計するデスクトップアプリです。"
+            "制作伝票フォルダ（指定フォルダ直下の .xls / .xlsx / .xlsm・サブフォルダは含まない）を読み込み、管理Noごとに作業時間・金額と購入・外注・材料費用を自動集計するデスクトップアプリです。"
         )
         self._add_table(
             ["順番", "操作", "内容"],
             [
-                ["1", "参照ファイルを選択", "起動時は自動集計しません。各ファイル・制作伝票フォルダを選択します（複数選択・サブフォルダ対応）。"],
+                ["1", "参照ファイルを選択", "起動時は自動集計しません。各ファイル・制作伝票フォルダを選択します（複数選択対応・制作伝票は指定フォルダ直下のみ参照）。"],
                 ["2", "「集計・一覧更新」を押す", "ボタンを押すとファイルを検証・読み込み、管理Noごとに一覧テーブルとサマリーを作成します。"],
-                ["3", "絞り込み・確認", "Excel風フィルターや行リンク表示で、明細（日報・購入・外注・受注・制作伝票）を確認します。"],
+                ["3", "絞り込み・確認", "Excel風フィルターや行リンク表示、小計1/2の内訳開閉ボタンで、一覧と明細（日報・購入・外注・受注・制作伝票）を確認します。"],
                 ["4", "Excel新規ブックで開く", "現在の一覧（列順番・フィルター・表示単位・見出し反映済み）をExcelの新規ブックとして直接開きます。"],
             ],
+            col_ratios=[0.08, 0.26, 0.66],
         )
 
         # 2. ファイル複数選択と読み取り専用保護・フォーマット検証
         self._add_section_header("files", "STEP 2", "参照ファイル＆制作伝票フォルダ（読み取り専用保護・フォーマット検証）")
         self._add_paragraph(
             "・日報／購入品／外注加工／受注表は各行の「選択(複数可)...」や「追加...」で複数ファイルを選択できます。\n"
-            "・制作伝票フォルダの行では「フォルダ選択...」でフォルダを指定すると、サブフォルダを含むすべての .xls / .xlsx / .xlsm ファイルを自動検出し、調整用(21行)・材料費各種(28～35行)・設計費(36行)・小計1を統合します。\n"
+            "・制作伝票フォルダの行では「選択(複数可)」から複数フォルダをチェック選択・追加・削除できます。選択した各フォルダ直下にある .xls / .xlsx / .xlsm ファイルのみを自動検出し（サブフォルダは自動探索しません）、調整用(21行)・材料費各種(28～35行)・設計費(36行)・重機/運搬費(AA17)・車両/交通費(AA18)・出張費(AA19)・総請求金額(AA30)・数量(AD9)を読み込み、小計1・消耗品費(6%)・管理費・小計2・小計1+小計2・諸経費(8%)・合計・合計/数量・調整額・総請求金額/数量を自動算出します。\n"
             "・各サンプルファイルとフォーマットが異なるファイルが含まれる場合はエラー通知が表示され、「エラー確認」ボタンから原因・期待形式・検出内容を詳しく確認できます。"
         )
         self._add_callout(
             "参照元ファイル・フォルダは変更されないよう厳重に保護されています",
-            "選択した日報・購入品・外注加工・受注表・制作伝票フォルダ（サブフォルダ含む）内の全ファイルは、常にメモリ上の読み取り専用データとして参照され、アプリから元のファイルやフォルダを書き換えることは一切ありません。\n"
+            "選択した日報・購入品・外注加工・受注表・制作伝票フォルダ内の全ファイルは、常にメモリ上の読み取り専用データとして参照され、アプリから元のファイルやフォルダを書き換えることは一切ありません。\n"
             "また、設定保存や出力時に参照元ファイルや制作伝票フォルダ内への書き込みを指定した場合も自動で厳重にブロックします。",
             COLORS["bg_header"],
             COLORS["accent"],
@@ -3235,22 +3964,24 @@ class HelpDialog(tk.Toplevel):
                 ["設計関係", "1～19", "62.5 円/分", "作業小計 に加算"],
                 ["その他作業", "70～89", "62.5 円/分", "作業小計 に加算"],
                 ["購入品 / 外注加工", "Q列（金額 単価X必要数）", "-", "購入品小計 に加算"],
-                ["制作伝票（フォルダ読込）", "21行(調整用), 28～35行(材料費), 36行(設計費)", "-", "作業小計＋調整用＋購入品小計＋材料費計＋設計費 ＝ 小計1"],
+                ["制作伝票（フォルダ読込）", "21行, 28～36行, AA17～19, AA30, AD9", "-", "小計1 / 消耗品費(6%) / 管理費 / 小計2 / 小計1+小計2 / 諸経費(8%) / 合計 / 合計÷数量 / 調整額 / 総請求金額÷数量"],
             ],
+            col_ratios=[0.22, 0.24, 0.14, 0.40],
         )
 
         # 4. 一覧とフィルター
-        self._add_section_header("filter", "STEP 4", "左右分割一覧（行リンク連動）とExcel風フィルター")
+        self._add_section_header("filter", "STEP 4", "左右分割一覧（行リンク連動・内訳開閉）とExcel風フィルター")
         self._add_paragraph(
             "・画面中央の一覧は左（その他見出し・受注情報）と右（日報/購入/外注/制作伝票の算出データ・各小計）に分かれています。\n"
+            "・初期状態では「小計1」「小計2」の内訳列を隠してスッキリ表示しています。一覧上部の「▶ 小計1内訳を表示」「▶ 小計2内訳を表示」「全内訳を表示」「小計のみ表示」ボタンでいつでも開閉できます。\n"
             "・「行リンク連動」がONの間は、縦スクロール・並び替え・選択行のハイライトが左右で自動的に揃うため、横並びで比較しやすくなります（横スクロールやセル選択・コピーは左右別々に操作できます）。\n"
             "・セルや行をクリックすると、左右の該当行が青く連動強調され、画面下部のタブにその管理Noの明細が表示されます。\n"
-            "・ファイル設定の折りたたみ：「▲ ファイル設定を畳む」で一覧をより広く表示できます"
+            "・ファイル設定の折りたたみ：「▲ ファイル設定を畳む」で一覧をより広く表示できます。"
         )
         self._add_callout(
-            "Excel風オートフィルタの使い方",
-            "各列の見出しの右端「▽」をクリック（または見出し上で右クリック）すると、Excelと同様の絞り込みポップアップが開きます。\n"
-            "値のチェックボックス選択・検索・数値条件（0より大きい、範囲指定など）・昇順/降順ソートが利用できます。",
+            "Excel風オートフィルタ＆全体検索の使い方",
+            "各列の見出しの右端「▽」をクリック（または見出し上で右クリック）すると、絞り込みポップアップが開きます。\n"
+            "半角・全角カタカナや英数字の違い、数値のカンマ有無を気にせず検索でき、「検索結果で即適用」ボタンや複数キーワードの連続チェック選択、数値条件（0より大きい、範囲指定など）にも対応しています。",
             COLORS["warning_bg"],
             COLORS["warning"],
         )
@@ -3349,7 +4080,7 @@ class SplitGridPane(ttk.LabelFrame):
         ttk.Button(btn_bar, text="選択解除", command=self.clear_selection).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_bar, text="列幅調整", command=self.autofit_all_columns).pack(side=tk.RIGHT, padx=(3, 0))
 
-        # 上部：テーブル本体（残り領域をすべて使用）
+        # 上部：テーブル本体（左右ペインで完全に同じY座標・高さに揃える）
         tree_container = ttk.Frame(self, style="Card.TFrame")
         tree_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
@@ -3591,7 +4322,7 @@ class SplitGridPane(ttk.LabelFrame):
         for r_idx, c_name in self.selected_cells:
             if 0 <= r_idx < len(self.rows) and c_name in NUMERIC_COLUMNS:
                 r_dict = self.rows[r_idx]
-                if c_name in WORK_CATEGORIES or c_name in ("作業小計", "小計1"):
+                if c_name in RATE_DEPENDENT_COLUMNS:
                     num_vals.append(self.app._get_work_numeric_val(r_dict, c_name))
                 else:
                     num_vals.append(to_float(r_dict.get(c_name, 0.0), 0.0))
@@ -3948,7 +4679,7 @@ class SplitGridPane(ttk.LabelFrame):
         if row_dict is None:
             return ""
         if raw_numbers:
-            if col in WORK_CATEGORIES or col in ("作業小計", "小計1"):
+            if col in RATE_DEPENDENT_COLUMNS:
                 val = self.app._get_work_numeric_val(row_dict, col)
                 return str(int(round(val))) if abs(val - round(val)) < 1e-6 else f"{val:.2f}"
             elif col in COST_YEN_COLUMNS:
@@ -3982,7 +4713,7 @@ class SplitGridPane(ttk.LabelFrame):
                     row_cells.append("")
                     continue
                 if raw_numbers:
-                    if col in WORK_CATEGORIES or col in ("作業小計", "小計1"):
+                    if col in RATE_DEPENDENT_COLUMNS:
                         val = self.app._get_work_numeric_val(r_dict, col)
                         cell_str = str(int(round(val))) if abs(val - round(val)) < 1e-6 else f"{val:.2f}"
                     elif col in COST_YEN_COLUMNS:
@@ -4042,7 +4773,7 @@ class SplitGridPane(ttk.LabelFrame):
             row_cells = []
             for col in columns:
                 if raw_numbers:
-                    if col in WORK_CATEGORIES or col in ("作業小計", "小計1"):
+                    if col in RATE_DEPENDENT_COLUMNS:
                         val = self.app._get_work_numeric_val(r, col)
                         cell_str = str(int(round(val))) if abs(val - round(val)) < 1e-6 else f"{val:.2f}"
                     elif col in COST_YEN_COLUMNS:
@@ -4130,7 +4861,7 @@ class SplitGridPane(ttk.LabelFrame):
                 col = self.sort_col if self.sort_col in self.visible_columns else (self.visible_columns[0] if self.visible_columns else "管理No")
                 desc = self.sort_desc
 
-            if col in WORK_CATEGORIES or col in ("作業小計", "小計1"):
+            if col in RATE_DEPENDENT_COLUMNS:
                 get_w = self.app._get_work_numeric_val
                 sort_key = lambda item: get_w(item, col)
             elif col in COST_YEN_COLUMNS:
@@ -4259,7 +4990,7 @@ class DenpyoHubApp:
             except (TypeError, ValueError):
                 self.work_rates[cat] = def_rate
 
-        # 列の順番・表示・幅設定（新しく追加された列は既存設定引き継ぎ時に自動表示）
+        # 列の順番・表示・幅設定（小計1・小計2の内訳列はデフォルトでは非表示にし、ボタンで展開可能）
         raw_saved_order = self.config.get("column_order", list(DEFAULT_COLUMN_ORDER))
         saved_order_set = set(raw_saved_order)
         self.column_order = [c for c in raw_saved_order if c in ALL_AVAILABLE_COLUMNS]
@@ -4267,13 +4998,20 @@ class DenpyoHubApp:
             if c not in self.column_order:
                 self.column_order.append(c)
 
-        saved_visible = self.config.get("visible_columns", list(DEFAULT_COLUMN_ORDER))
+        has_sub_detail_flags = ("show_sub1_details" in self.config) or ("show_sub2_details" in self.config)
+        self.show_sub1_details = bool(self.config.get("show_sub1_details", False))
+        self.show_sub2_details = bool(self.config.get("show_sub2_details", False))
+
+        saved_visible = self.config.get("visible_columns", list(DEFAULT_VISIBLE_COLUMNS))
         self.visible_set = {c for c in saved_visible if c in ALL_AVAILABLE_COLUMNS}
         if not self.visible_set:
-            self.visible_set = set(DEFAULT_COLUMN_ORDER)
+            self.visible_set = set(DEFAULT_VISIBLE_COLUMNS)
         for c in ALL_AVAILABLE_COLUMNS:
-            if c not in saved_order_set and c != "備考":
+            if c not in saved_order_set and c not in DEFAULT_HIDDEN_COLUMNS:
                 self.visible_set.add(c)
+        if not has_sub_detail_flags:
+            self.visible_set.difference_update(SUBTOTAL1_DETAIL_COLUMNS)
+            self.visible_set.difference_update(SUBTOTAL2_DETAIL_COLUMNS)
         self.visible_columns = [c for c in self.column_order if c in self.visible_set]
 
         saved_widths = self.config.get("column_widths", {})
@@ -4293,6 +5031,9 @@ class DenpyoHubApp:
         self.code_summary_var = tk.StringVar(value="")
         self.filter_status_var = tk.StringVar(value="列フィルター: なし")
         self.status_var = tk.StringVar(value="起動しています...")
+        self.progress_msg_var = tk.StringVar(value="")
+        self.progress_pct_var = tk.StringVar(value="0%")
+        self._progress_hide_job = None
         self.summary_var = tk.StringVar(value="表示件数: 0 件")
         self.config_info_var = tk.StringVar(value=f"設定ファイル: {self.config_path}")
 
@@ -4598,7 +5339,7 @@ class DenpyoHubApp:
         # 2. ファイル選択＆更新日表示エリア（折りたたみ可能）
         self.file_group = ttk.LabelFrame(
             self.root,
-            text="参照ファイル設定（複数選択可・制作伝票フォルダはサブフォルダ内も自動参照・すべて読み取り専用保護）",
+            text="参照ファイル設定（複数選択可・制作伝票フォルダは指定フォルダ直下のみ参照・すべて読み取り専用保護）",
             padding=(10, 4),
         )
         self.file_group.pack(side=tk.TOP, fill=tk.X, padx=10, pady=2)
@@ -4656,7 +5397,7 @@ class DenpyoHubApp:
             )
             mtime_lbl.grid(row=row_idx, column=3, sticky=tk.W, padx=(8, 6), pady=2)
 
-        # 5行目: 制作伝票フォルダ (.xls / .xlsx / .xlsm・サブフォルダ含む)
+        # 5行目: 制作伝票フォルダ (指定フォルダ直下の .xls / .xlsx / .xlsm・サブフォルダ除く)
         seizo_row = len(file_defs)
         ttk.Label(self.file_group, text="制作伝票フォルダ (.xls/.xlsx/.xlsm)", style="Card.TLabel", width=27).grid(
             row=seizo_row, column=0, sticky=tk.W, padx=(4, 6), pady=2
@@ -4670,7 +5411,7 @@ class DenpyoHubApp:
 
         ttk.Button(
             s_btn_box,
-            text="フォルダ選択",
+            text="選択(複数可)",
             width=12,
             command=self.select_seizo_folder_replace,
         ).pack(side=tk.LEFT, padx=1)
@@ -4835,6 +5576,41 @@ class DenpyoHubApp:
             font=("Yu Gothic UI", 9, "bold"),
         ).pack(side=tk.RIGHT, padx=(0, 8))
 
+        # 集計・一覧更新の進捗バーパネル（処理中のみ操作バー下部に大きく見やすく表示）
+        self.progress_panel = tk.Frame(
+            self.ctrl_frame,
+            bg=COLORS["accent_light"],
+            highlightbackground=COLORS["accent"],
+            highlightthickness=1,
+            padx=10,
+            pady=4,
+        )
+        tk.Label(
+            self.progress_panel,
+            textvariable=self.progress_msg_var,
+            bg=COLORS["accent_light"],
+            fg=COLORS["accent"],
+            font=("Yu Gothic UI", 9, "bold"),
+            anchor=tk.W,
+            width=46,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        self.progress_bar = ttk.Progressbar(
+            self.progress_panel,
+            mode="determinate",
+            maximum=100,
+            value=0,
+        )
+        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        tk.Label(
+            self.progress_panel,
+            textvariable=self.progress_pct_var,
+            bg=COLORS["accent_light"],
+            fg=COLORS["accent"],
+            font=("Yu Gothic UI", 9, "bold"),
+            width=5,
+            anchor=tk.E,
+        ).pack(side=tk.RIGHT)
+
         # 4. 最下部ステータスバー（メイン分割領域より先に side=BOTTOM で確保し、途切れを防止）
         status_bar = tk.Frame(self.root, bg="#E2E8F0", padx=10, pady=3)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
@@ -4846,7 +5622,6 @@ class DenpyoHubApp:
             font=("Yu Gothic UI", 9),
             anchor=tk.W,
         ).pack(side=tk.LEFT)
-        self.progress_bar = ttk.Progressbar(status_bar, mode="indeterminate", length=140)
         tk.Label(
             status_bar,
             textvariable=self.config_info_var,
@@ -4878,6 +5653,39 @@ class DenpyoHubApp:
         )
         self.summary_lbl.pack(fill=tk.X)
         summary_bar.bind("<Configure>", lambda e: self.summary_lbl.configure(wraplength=max(400, e.width - 16)))
+
+        # 算出データ内訳表示トグルバー（h_paned の外側に配置し、左右ペインの行高・開始Y座標を完全一致させる）
+        detail_toggle_bar = tk.Frame(list_outer, bg=COLORS["bg_header"], padx=8, pady=3)
+        detail_toggle_bar.pack(side=tk.TOP, fill=tk.X, pady=(0, 3))
+        tk.Label(
+            detail_toggle_bar,
+            text="算出データの内訳表示:",
+            bg=COLORS["bg_header"],
+            fg=COLORS["fg_sub"],
+            font=("Yu Gothic UI", 9, "bold"),
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_toggle_sub1 = ttk.Button(
+            detail_toggle_bar,
+            text="▶ 小計1内訳を表示",
+            command=self.toggle_subtotal1_details,
+        )
+        self.btn_toggle_sub1.pack(side=tk.LEFT, padx=(0, 4))
+        self.btn_toggle_sub2 = ttk.Button(
+            detail_toggle_bar,
+            text="▶ 小計2内訳を表示",
+            command=self.toggle_subtotal2_details,
+        )
+        self.btn_toggle_sub2.pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(
+            detail_toggle_bar,
+            text="全内訳を表示",
+            command=lambda: self.set_subtotal_details_visibility(True, True),
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            detail_toggle_bar,
+            text="小計のみ表示",
+            command=lambda: self.set_subtotal_details_visibility(False, False),
+        ).pack(side=tk.LEFT, padx=2)
 
         self.h_paned = tk.PanedWindow(list_outer, orient=tk.HORIZONTAL, bg=COLORS["border"], sashwidth=7, relief=tk.FLAT)
         self.h_paned.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -5081,6 +5889,68 @@ class DenpyoHubApp:
 
         self.meta_pane.configure_columns(meta_cols)
         self.calc_pane.configure_columns(calc_cols)
+        self._sync_subtotal_detail_buttons()
+
+    def _sync_subtotal_detail_buttons(self):
+        """小計1・小計2の内訳表示トグルボタンの表示テキストとスタイルを現在の表示列と同期する"""
+        self.show_sub1_details = any(c in self.visible_set for c in SUBTOTAL1_DETAIL_COLUMNS)
+        self.show_sub2_details = any(c in self.visible_set for c in SUBTOTAL2_DETAIL_COLUMNS)
+        b1 = getattr(self, "btn_toggle_sub1", None)
+        b2 = getattr(self, "btn_toggle_sub2", None)
+        if b1 is not None:
+            b1.configure(
+                text="▼ 小計1内訳を隠す" if self.show_sub1_details else "▶ 小計1内訳を表示",
+                style="Primary.TButton" if self.show_sub1_details else "TButton",
+            )
+        if b2 is not None:
+            b2.configure(
+                text="▼ 小計2内訳を隠す" if self.show_sub2_details else "▶ 小計2内訳を表示",
+                style="Primary.TButton" if self.show_sub2_details else "TButton",
+            )
+
+    def set_subtotal_details_visibility(self, show_sub1: bool, show_sub2: bool):
+        """小計1・小計2の内訳項目の表示・非表示を一括切り替えして画面と設定を更新する"""
+        prev_y = 0.0
+        try:
+            prev_y = self.meta_pane.tree.yview()[0]
+        except Exception:
+            pass
+        self.show_sub1_details = bool(show_sub1)
+        self.show_sub2_details = bool(show_sub2)
+        if self.show_sub1_details:
+            self.visible_set.update(SUBTOTAL1_DETAIL_COLUMNS)
+        else:
+            self.visible_set.difference_update(SUBTOTAL1_DETAIL_COLUMNS)
+        if self.show_sub2_details:
+            self.visible_set.update(SUBTOTAL2_DETAIL_COLUMNS)
+        else:
+            self.visible_set.difference_update(SUBTOTAL2_DETAIL_COLUMNS)
+        self.visible_columns = [c for c in self.column_order if c in self.visible_set]
+        self._configure_main_tree_columns()
+        self._refresh_both_panes_sorted()
+        if prev_y > 0.0:
+            def restore_y():
+                try:
+                    self._syncing_yscroll = True
+                    self.meta_pane.tree.yview_moveto(prev_y)
+                    self.calc_pane.tree.yview_moveto(prev_y)
+                except Exception:
+                    pass
+                finally:
+                    self._syncing_yscroll = False
+            self.root.after(20, restore_y)
+        self.save_config()
+        s1_txt = "表示" if self.show_sub1_details else "非表示"
+        s2_txt = "表示" if self.show_sub2_details else "非表示"
+        self.status_var.set(f"内訳列の表示を切り替えました（小計1内訳: {s1_txt} / 小計2内訳: {s2_txt}）")
+
+    def toggle_subtotal1_details(self):
+        """小計1に対する内訳項目の表示・非表示を切り替える"""
+        self.set_subtotal_details_visibility(not self.show_sub1_details, self.show_sub2_details)
+
+    def toggle_subtotal2_details(self):
+        """小計2に対する内訳項目の表示・非表示を切り替える"""
+        self.set_subtotal_details_visibility(self.show_sub1_details, not self.show_sub2_details)
 
     def _update_heading_texts(self):
         self.meta_pane.update_heading_texts()
@@ -5178,7 +6048,7 @@ class DenpyoHubApp:
             row_cells = []
             for col in columns:
                 if raw_numbers:
-                    if col in WORK_CATEGORIES or col in ("作業小計", "小計1"):
+                    if col in RATE_DEPENDENT_COLUMNS:
                         val = self._get_work_numeric_val(r, col)
                         cell_str = str(int(round(val))) if abs(val - round(val)) < 1e-6 else f"{val:.2f}"
                     elif col in COST_YEN_COLUMNS:
@@ -5291,6 +6161,8 @@ class DenpyoHubApp:
             "link_rows": self.link_rows_var.get(),
             "column_order": self.column_order,
             "visible_columns": [c for c in self.column_order if c in self.visible_set],
+            "show_sub1_details": self.show_sub1_details,
+            "show_sub2_details": self.show_sub2_details,
             "column_widths": self.column_widths,
             "filter_mode": self.filter_mode_var.get(),
             "time_unit": self.time_unit_var.get(),
@@ -5348,7 +6220,9 @@ class DenpyoHubApp:
         self.time_unit_var.set(DEFAULT_TIME_UNIT)
         self.link_rows_var.set(True)
         self.column_order = list(DEFAULT_COLUMN_ORDER) + [c for c in ALL_AVAILABLE_COLUMNS if c not in DEFAULT_COLUMN_ORDER]
-        self.visible_set = set(DEFAULT_COLUMN_ORDER)
+        self.show_sub1_details = False
+        self.show_sub2_details = False
+        self.visible_set = set(DEFAULT_VISIBLE_COLUMNS)
         self.visible_columns = [c for c in self.column_order if c in self.visible_set]
         self.column_widths = dict(DEFAULT_COL_WIDTHS)
         self.filter_mode_var.set("実績ありのみ")
@@ -5464,11 +6338,18 @@ class DenpyoHubApp:
             if c not in self.column_order:
                 self.column_order.append(c)
 
-        saved_visible = cfg.get("visible_columns", list(DEFAULT_COLUMN_ORDER))
-        self.visible_set = {c for c in saved_visible if c in ALL_AVAILABLE_COLUMNS} or set(DEFAULT_COLUMN_ORDER)
+        has_sub_detail_flags = ("show_sub1_details" in cfg) or ("show_sub2_details" in cfg)
+        self.show_sub1_details = bool(cfg.get("show_sub1_details", False))
+        self.show_sub2_details = bool(cfg.get("show_sub2_details", False))
+
+        saved_visible = cfg.get("visible_columns", list(DEFAULT_VISIBLE_COLUMNS))
+        self.visible_set = {c for c in saved_visible if c in ALL_AVAILABLE_COLUMNS} or set(DEFAULT_VISIBLE_COLUMNS)
         for c in ALL_AVAILABLE_COLUMNS:
-            if c not in saved_order_set and c != "備考":
+            if c not in saved_order_set and c not in DEFAULT_HIDDEN_COLUMNS:
                 self.visible_set.add(c)
+        if not has_sub_detail_flags:
+            self.visible_set.difference_update(SUBTOTAL1_DETAIL_COLUMNS)
+            self.visible_set.difference_update(SUBTOTAL2_DETAIL_COLUMNS)
         self.visible_columns = [c for c in self.column_order if c in self.visible_set]
 
         saved_widths = cfg.get("column_widths", {})
@@ -5654,27 +6535,26 @@ class DenpyoHubApp:
             self._refresh_file_mtime_async()
             self.save_config()
 
-    def select_seizo_folder_replace(self):
-        """制作伝票Excelが入ったフォルダを選択して置き換える"""
-        cur = self.file_lists["seizo"]
-        init_dir = cur[-1] if cur and os.path.exists(cur[-1]) else get_base_dir()
-        folder = filedialog.askdirectory(
-            parent=self.root,
-            title="制作伝票Excel (.xls / .xlsx / .xlsm) が入っているフォルダを選択してください（サブフォルダも自動参照）",
-            initialdir=init_dir,
-        )
-        if folder:
-            self.file_lists["seizo"] = self._normalize_file_list([folder])
+    def open_seizo_folder_dialog(self, initial_tab: int = 0):
+        """制作伝票フォルダの複数選択・管理ダイアログを開く"""
+        def on_apply(new_folders):
+            self.file_lists["seizo"] = self._normalize_file_list(new_folders)
             self._refresh_file_mtime_async()
             self.save_config()
 
+        SeizoFolderDialog(self.root, self.file_lists["seizo"], on_apply, initial_tab=initial_tab)
+
+    def select_seizo_folder_replace(self):
+        """制作伝票フォルダを複数選択・管理できるダイアログを開く"""
+        self.open_seizo_folder_dialog(initial_tab=0)
+
     def select_seizo_folder_append(self):
-        """制作伝票Excelが入った別フォルダを追加する"""
+        """制作伝票Excelが入った別フォルダを追加する（指定フォルダ直下のみ参照）"""
         cur = self.file_lists["seizo"]
         init_dir = cur[-1] if cur and os.path.exists(cur[-1]) else get_base_dir()
         folder = filedialog.askdirectory(
             parent=self.root,
-            title="追加する制作伝票フォルダを選択してください（サブフォルダも自動参照）",
+            title="追加する制作伝票フォルダを選択してください（サブフォルダは含みません）",
             initialdir=init_dir,
         )
         if folder:
@@ -5683,70 +6563,8 @@ class DenpyoHubApp:
             self.save_config()
 
     def open_seizo_file_list_dialog(self):
-        """制作伝票フォルダ（サブフォルダ含む）内の検出済みExcel一覧を表示するダイアログ"""
-        dlg = tk.Toplevel(self.root)
-        dlg.title("制作伝票フォルダ（サブフォルダ含む）・検出済みExcelファイル一覧")
-        dlg.geometry("860x480")
-        dlg.minsize(680, 360)
-        dlg.configure(bg=COLORS["bg_card"])
-        dlg.transient(self.root)
-        dlg.grab_set()
-
-        frame = ttk.Frame(dlg, style="Card.TFrame", padding=14)
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        ftr = ttk.Frame(frame, style="Flat.TFrame")
-        ftr.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
-
-        ttk.Label(
-            frame,
-            text="指定中の制作伝票フォルダ（サブフォルダ含む）内の対象Excel (.xls / .xlsx / .xlsm)",
-            style="Title.TLabel",
-        ).pack(anchor=tk.W, pady=(0, 6))
-
-        base_folders = self.file_lists["seizo"]
-        folders_str = " / ".join(base_folders) if base_folders else "(フォルダ未指定)"
-        ttk.Label(frame, text=f"指定フォルダ: {folders_str}", style="Mtime.TLabel", wraplength=810).pack(anchor=tk.W, pady=(0, 8))
-
-        tv_frame = ttk.Frame(frame, style="Card.TFrame")
-        tv_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        cols = ("ファイル名", "相対パス（サブフォルダ）", "更新日時", "フルパス")
-        tv = ttk.Treeview(tv_frame, columns=cols, show="headings")
-        vsb = ttk.Scrollbar(tv_frame, orient=tk.VERTICAL, command=tv.yview)
-        hsb = ttk.Scrollbar(tv_frame, orient=tk.HORIZONTAL, command=tv.xview)
-        tv.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        tv.grid(row=0, column=0, sticky=tk.NSEW)
-        vsb.grid(row=0, column=1, sticky=tk.NS)
-        hsb.grid(row=1, column=0, sticky=tk.EW)
-        tv_frame.rowconfigure(0, weight=1)
-        tv_frame.columnconfigure(0, weight=1)
-
-        tv.heading("ファイル名", text="ファイル名")
-        tv.heading("相対パス（サブフォルダ）", text="相対パス（サブフォルダ）")
-        tv.heading("更新日時", text="更新日時")
-        tv.heading("フルパス", text="フルパス")
-        tv.column("ファイル名", width=165, anchor=tk.W)
-        tv.column("相対パス（サブフォルダ）", width=190, anchor=tk.W)
-        tv.column("更新日時", width=150, anchor=tk.CENTER, stretch=False)
-        tv.column("フルパス", width=320, anchor=tk.W)
-
-        files = expand_seizo_excel_files(base_folders)
-        for fp in files:
-            rel_disp = os.path.basename(fp)
-            for bf in base_folders:
-                if bf and os.path.isdir(bf):
-                    try:
-                        norm_fp = os.path.abspath(os.path.normpath(fp))
-                        norm_bf = os.path.abspath(os.path.normpath(bf))
-                        if os.path.commonpath([norm_fp, norm_bf]) == norm_bf:
-                            rel_disp = os.path.relpath(norm_fp, norm_bf)
-                            break
-                    except Exception:
-                        pass
-            tv.insert("", tk.END, values=(os.path.basename(fp), rel_disp, format_file_mtime(fp), fp))
-
-        ttk.Label(ftr, text=f"合計 {len(files):,} ファイル検出（サブフォルダ含む・すべて読み取り専用で参照）", style="Mtime.TLabel").pack(side=tk.LEFT)
-        ttk.Button(ftr, text="閉じる", style="Primary.TButton", command=dlg.destroy).pack(side=tk.RIGHT)
+        """制作伝票フォルダ管理・検出済みExcelファイル一覧ダイアログ（一覧タブ）を開く"""
+        self.open_seizo_folder_dialog(initial_tab=1)
 
     def open_file_list_dialog(self, key: str, label_text: str, filetypes: list):
         """指定カテゴリの複数ファイル一覧編集ダイアログを開く"""
@@ -5856,7 +6674,7 @@ class DenpyoHubApp:
         }
 
     def run_aggregation(self, silent_missing: bool = False):
-        """選択された全ファイル（複数可・サブフォルダ含む）をバックグラウンドで検証・読み込みし、管理Noごとに集計を行う"""
+        """選択された全ファイル（複数可・制作伝票は指定フォルダ直下のみ）をバックグラウンドで検証・読み込みし、管理Noごとに集計を行う"""
         self.save_config()
 
         has_any_path = any(bool(paths) for paths in self.file_lists.values())
@@ -5879,25 +6697,23 @@ class DenpyoHubApp:
 
         self._refresh_file_display_vars(skip_io=True)
         self.status_var.set("ファイルを読み込んでいます（バックグラウンド処理中）...")
-        try:
-            self.btn_aggregate.configure(text="読み込み中...")
-            self.progress_bar.pack(side=tk.RIGHT, padx=(8, 12))
-            self.progress_bar.start(12)
-        except Exception:
-            pass
+        self._start_loading_indicator("集計準備中：対象ファイルを確認しています...", 2)
 
         def is_cancelled():
             return self._closing or (job_id != self._active_job_id)
 
         last_post_t = [0.0]
 
-        def post_status(msg: str, force: bool = False):
+        def post_progress(pct: float, msg: str, force: bool = False):
             if is_cancelled():
                 return
             now = time.perf_counter()
-            if force or (now - last_post_t[0] >= 0.04):
+            if force or (now - last_post_t[0] >= 0.03):
                 last_post_t[0] = now
-                self._ui_queue.put(lambda m=msg: (not is_cancelled()) and self.status_var.set(m))
+                p_clamped = min(max(float(pct), 0.0), 100.0)
+                self._ui_queue.put(
+                    lambda p=p_clamped, m=msg: (not is_cancelled()) and self._update_progress_ui(p, m)
+                )
 
         def worker():
             errors = []
@@ -5910,7 +6726,7 @@ class DenpyoHubApp:
             mtime_map = {}
 
             try:
-                # 0. 全ファイルの存在・更新日時チェック
+                # 0. 全ファイルの存在・更新日時チェック (2% -> 6%)
                 seizo_folders = file_snapshot.get("seizo", [])
                 seizo_files = expand_seizo_excel_files(seizo_folders)
                 for k, paths in file_snapshot.items():
@@ -5938,11 +6754,15 @@ class DenpyoHubApp:
                         )
                     return
 
-                # 1. 日報ファイル（複数可）の読み込み＆フォーマット検証
+                post_progress(6, "対象ファイルの確認完了。読み込みを開始します...", force=True)
+
+                # 1. 日報ファイル（複数可）の読み込み＆フォーマット検証 (6% -> 16%)
+                n_daily = max(1, len(file_snapshot["daily"]))
                 for idx, p in enumerate(file_snapshot["daily"], 1):
                     if is_cancelled():
                         return
-                    post_status(f"[1/5] 日報ファイル読込中 ({idx}/{len(file_snapshot['daily'])}): {os.path.basename(p)}", force=(idx == 1))
+                    pct = 6.0 + 10.0 * ((idx - 1) / n_daily)
+                    post_progress(pct, f"[1/5] 日報ファイル読込中 ({idx}/{len(file_snapshot['daily'])}): {os.path.basename(p)}", force=(idx == 1))
                     if not os.path.exists(p):
                         errors.append(self._make_error_entry("日報ファイル", p, FileNotFoundError(p)))
                         continue
@@ -5961,12 +6781,15 @@ class DenpyoHubApp:
                         file_snapshot["daily"],
                         extra_info=f"(データ内最新: {daily_latest})",
                     )
+                post_progress(16, "[1/5] 日報ファイル読込完了", force=True)
 
-                # 2. 購入品ファイル（複数可）の読み込み＆フォーマット検証
+                # 2. 購入品ファイル（複数可）の読み込み＆フォーマット検証 (16% -> 40%)
+                n_kounyu = max(1, len(file_snapshot["kounyu"]))
                 for idx, p in enumerate(file_snapshot["kounyu"], 1):
                     if is_cancelled():
                         return
-                    post_status(f"[2/5] 購入品ファイル読込中 ({idx}/{len(file_snapshot['kounyu'])}): {os.path.basename(p)}", force=(idx == 1))
+                    pct = 16.0 + 24.0 * ((idx - 1) / n_kounyu)
+                    post_progress(pct, f"[2/5] 購入品ファイル読込中 ({idx}/{len(file_snapshot['kounyu'])}): {os.path.basename(p)}", force=(idx == 1))
                     if not os.path.exists(p):
                         errors.append(self._make_error_entry("購入品ファイル", p, FileNotFoundError(p)))
                         continue
@@ -5983,12 +6806,15 @@ class DenpyoHubApp:
                         return
                     except Exception as e:
                         errors.append(self._make_error_entry("購入品ファイル", p, e))
+                post_progress(40, "[2/5] 購入品ファイル読込完了", force=True)
 
-                # 3. 外注加工ファイル（複数可）の読み込み＆フォーマット検証
+                # 3. 外注加工ファイル（複数可）の読み込み＆フォーマット検証 (40% -> 52%)
+                n_gaichu = max(1, len(file_snapshot["gaichu"]))
                 for idx, p in enumerate(file_snapshot["gaichu"], 1):
                     if is_cancelled():
                         return
-                    post_status(f"[3/5] 外注加工ファイル読込中 ({idx}/{len(file_snapshot['gaichu'])}): {os.path.basename(p)}", force=(idx == 1))
+                    pct = 40.0 + 12.0 * ((idx - 1) / n_gaichu)
+                    post_progress(pct, f"[3/5] 外注加工ファイル読込中 ({idx}/{len(file_snapshot['gaichu'])}): {os.path.basename(p)}", force=(idx == 1))
                     if not os.path.exists(p):
                         errors.append(self._make_error_entry("外注加工ファイル", p, FileNotFoundError(p)))
                         continue
@@ -6005,12 +6831,15 @@ class DenpyoHubApp:
                         return
                     except Exception as e:
                         errors.append(self._make_error_entry("外注加工ファイル", p, e))
+                post_progress(52, "[3/5] 外注加工ファイル読込完了", force=True)
 
-                # 4. 受注表ファイル（複数可）の読み込み＆フォーマット検証
+                # 4. 受注表ファイル（複数可）の読み込み＆フォーマット検証 (52% -> 64%)
+                n_juchu = max(1, len(file_snapshot["juchu"]))
                 for idx, p in enumerate(file_snapshot["juchu"], 1):
                     if is_cancelled():
                         return
-                    post_status(f"[4/5] 受注表ファイル読込中 ({idx}/{len(file_snapshot['juchu'])}): {os.path.basename(p)}", force=(idx == 1))
+                    pct = 52.0 + 12.0 * ((idx - 1) / n_juchu)
+                    post_progress(pct, f"[4/5] 受注表ファイル読込中 ({idx}/{len(file_snapshot['juchu'])}): {os.path.basename(p)}", force=(idx == 1))
                     if not os.path.exists(p):
                         errors.append(self._make_error_entry("受注表ファイル", p, FileNotFoundError(p)))
                         continue
@@ -6025,27 +6854,40 @@ class DenpyoHubApp:
                         return
                     except Exception as e:
                         errors.append(self._make_error_entry("受注表ファイル", p, e))
+                post_progress(64, "[4/5] 受注表ファイル読込完了", force=True)
 
-                # 5. 制作伝票フォルダ（サブフォルダ含む .xls / .xlsx / .xlsm）の高速読み込み＆フォーマット検証
+                # 5. 制作伝票フォルダ（指定フォルダ直下の .xls / .xlsx / .xlsm・サブフォルダ除く）の高速読み込み＆フォーマット検証 (64% -> 90%)
                 total_seizo = len(seizo_files)
                 if total_seizo > 0:
                     can_parallel = total_seizo >= 3 and all(not fp.lower().endswith(".xls") for fp in seizo_files)
                     if can_parallel:
-                        post_status(f"[5/5] 制作伝票を一括並列読込中 (全{total_seizo}ファイル)...", force=True)
+                        post_progress(65, f"[5/5] 制作伝票を一括並列読込中 (0/{total_seizo}ファイル)...", force=True)
                         max_w = min(4, os.cpu_count() or 2)
+                        done_lock = threading.Lock()
+                        done_cnt = [0]
 
                         def load_one_seizo(idx_fp):
                             idx_i, fp_i = idx_fp
                             if is_cancelled():
                                 return idx_i, fp_i, None, None
-                            post_status(f"[5/5] 制作伝票読込中 ({idx_i}/{total_seizo}): {os.path.basename(fp_i)}")
                             try:
                                 rec = read_seizo_denpyo_sheet(fp_i, cancel_check=is_cancelled, base_folders=seizo_folders)
-                                return idx_i, fp_i, rec, None
+                                err_v = None
                             except InterruptedError:
                                 return idx_i, fp_i, None, InterruptedError()
                             except Exception as e:
-                                return idx_i, fp_i, None, e
+                                rec = None
+                                err_v = e
+                            with done_lock:
+                                done_cnt[0] += 1
+                                cur_done = done_cnt[0]
+                            pct_s = 64.0 + 26.0 * (cur_done / total_seizo)
+                            post_progress(
+                                pct_s,
+                                f"[5/5] 制作伝票読込中 ({cur_done}/{total_seizo}): {os.path.basename(fp_i)}",
+                                force=(cur_done == total_seizo),
+                            )
+                            return idx_i, fp_i, rec, err_v
 
                         with ThreadPoolExecutor(max_workers=max_w) as pool:
                             results = list(pool.map(load_one_seizo, enumerate(seizo_files, 1)))
@@ -6060,7 +6902,8 @@ class DenpyoHubApp:
                         for idx, p in enumerate(seizo_files, 1):
                             if is_cancelled():
                                 return
-                            post_status(f"[5/5] 制作伝票読込中 ({idx}/{total_seizo}): {os.path.basename(p)}", force=(idx == 1))
+                            pct_s = 64.0 + 26.0 * ((idx - 1) / total_seizo)
+                            post_progress(pct_s, f"[5/5] 制作伝票読込中 ({idx}/{total_seizo}): {os.path.basename(p)}", force=(idx == 1))
                             try:
                                 rec = read_seizo_denpyo_sheet(p, cancel_check=is_cancelled, base_folders=seizo_folders)
                                 if rec:
@@ -6069,11 +6912,11 @@ class DenpyoHubApp:
                                 return
                             except Exception as e:
                                 errors.append(self._make_error_entry("制作伝票ファイル", p, e))
+                post_progress(90, "全ファイル読込完了。集計データを構築しています...", force=True)
 
                 if is_cancelled():
                     return
 
-                post_status("集計データを構築しています...", force=True)
                 bundle = self._compute_aggregation_bundle(
                     raw_daily,
                     raw_kounyu,
@@ -6083,6 +6926,7 @@ class DenpyoHubApp:
                     raw_seizo=raw_seizo,
                     work_rates=work_rates_snapshot,
                 )
+                post_progress(97, "一覧テーブルを描画しています...", force=True)
                 if not is_cancelled():
                     self._ui_queue.put(
                         lambda: self._on_aggregation_finished(
@@ -6095,12 +6939,58 @@ class DenpyoHubApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _stop_loading_indicator(self):
+    def _start_loading_indicator(self, msg: str, pct: float = 0.0):
+        """集計・一覧更新の確定進捗バーを表示して開始状態にする"""
+        if self._progress_hide_job is not None:
+            try:
+                self.root.after_cancel(self._progress_hide_job)
+            except Exception:
+                pass
+            self._progress_hide_job = None
+        try:
+            self.btn_aggregate.configure(text="集計中...")
+            if not self.progress_panel.winfo_ismapped():
+                self.progress_panel.pack(fill=tk.X, pady=(4, 0))
+            self._update_progress_ui(pct, msg)
+        except Exception:
+            pass
+
+    def _update_progress_ui(self, pct: float, msg: str):
+        """進捗バー（0～100%）と進捗テキスト・ステータスバーを同期更新する"""
+        if self._closing:
+            return
+        p_int = int(round(min(max(pct, 0.0), 100.0)))
+        self.progress_msg_var.set(msg)
+        self.progress_pct_var.set(f"{p_int}%")
+        self.status_var.set(f"{msg} ({p_int}%)")
+        try:
+            self.progress_bar["value"] = p_int
+        except Exception:
+            pass
+
+    def _stop_loading_indicator(self, completed: bool = False):
         self._is_loading = False
         try:
             self.btn_aggregate.configure(text="集計・一覧更新")
-            self.progress_bar.stop()
-            self.progress_bar.pack_forget()
+            if completed:
+                self.progress_bar["value"] = 100
+                self.progress_pct_var.set("100%")
+                self.progress_msg_var.set("集計・一覧更新が完了しました")
+                if self._progress_hide_job is not None:
+                    try:
+                        self.root.after_cancel(self._progress_hide_job)
+                    except Exception:
+                        pass
+                def hide_panel():
+                    self._progress_hide_job = None
+                    if not self._is_loading and not self._closing:
+                        try:
+                            self.progress_panel.pack_forget()
+                        except Exception:
+                            pass
+                self._progress_hide_job = self.root.after(600, hide_panel)
+            else:
+                self.progress_panel.pack_forget()
         except Exception:
             pass
 
@@ -6130,7 +7020,7 @@ class DenpyoHubApp:
     ):
         if self._closing or job_id != self._active_job_id:
             return
-        self._stop_loading_indicator()
+        self._stop_loading_indicator(completed=True)
         self._apply_mtime_results(mtime_map)
 
         self.last_errors = list(errors)
@@ -6185,7 +7075,7 @@ class DenpyoHubApp:
 
     @staticmethod
     def _populate_row_rate_cache(row_dict: dict, rates_tuple: tuple):
-        """1行分の円換算キャッシュ（作業費5区分・作業小計・小計1）を一括計算して格納する"""
+        """1行分の円換算キャッシュ（作業費5区分・作業小計・小計1・消耗品費・管理費・小計2・小計1+小計2・諸経費・合計・単価・調整額）を一括計算して格納する"""
         r0, r1, r2, r3, r4 = rates_tuple
         y0 = int(round(to_float(row_dict.get("作業時間", 0.0), 0.0) * r0))
         y1 = int(round(to_float(row_dict.get("移動時間", 0.0), 0.0) * r1))
@@ -6193,13 +7083,25 @@ class DenpyoHubApp:
         y3 = int(round(to_float(row_dict.get("設計関係", 0.0), 0.0) * r3))
         y4 = int(round(to_float(row_dict.get("その他作業", 0.0), 0.0) * r4))
         y_sub = y0 + y1 + y2 + y3 + y4
-        y_sub1 = (
-            y_sub
-            + int(round(to_float(row_dict.get("調整用", 0.0), 0.0)))
-            + int(round(to_float(row_dict.get("購入品小計", 0.0), 0.0)))
-            + int(round(to_float(row_dict.get("材料費計", 0.0), 0.0)))
-            + int(round(to_float(row_dict.get("設計費", 0.0), 0.0)))
-        )
+        y_adj = int(round(to_float(row_dict.get("調整用", 0.0), 0.0)))
+        y_ksub = int(round(to_float(row_dict.get("購入品小計", 0.0), 0.0)))
+        y_mat = int(round(to_float(row_dict.get("材料費計", 0.0), 0.0)))
+        y_des = int(round(to_float(row_dict.get("設計費", 0.0), 0.0)))
+        y_sub1 = y_sub + y_adj + y_ksub + y_mat + y_des
+        y_shoumou = int(round((y_sub + y_mat + y_des) * 0.06))
+        y_juki = int(round(to_float(row_dict.get("重機、運搬費", 0.0), 0.0)))
+        y_sharyo = int(round(to_float(row_dict.get("車両、交通費", 0.0), 0.0)))
+        y_shucho = int(round(to_float(row_dict.get("出張費", 0.0), 0.0)))
+        y_kanri = int(round(y_sub1 * 0.02))
+        y_sub2 = y_shoumou + y_juki + y_sharyo + y_shucho + y_kanri
+        y_sub12 = y_sub1 + y_sub2
+        y_shokeihi = int(round(y_sub12 * 0.08))
+        y_total = y_sub12 + y_shokeihi
+        seizo_qty = to_float(row_dict.get("_制作伝票数量", 0.0), 0.0)
+        y_total_per_qty = int(round(y_total / seizo_qty)) if (seizo_qty > 0 and y_total != 0) else 0
+        y_seikyu = int(round(to_float(row_dict.get("総請求金額", 0.0), 0.0)))
+        y_choseigaku = y_seikyu - y_total
+        y_seikyu_per_qty = int(round(y_seikyu / seizo_qty)) if (seizo_qty > 0 and y_seikyu != 0) else 0
         row_dict["_rates_key"] = rates_tuple
         row_dict["_yen_作業時間"] = float(y0)
         row_dict["_yen_移動時間"] = float(y1)
@@ -6208,6 +7110,15 @@ class DenpyoHubApp:
         row_dict["_yen_その他作業"] = float(y4)
         row_dict["_yen_作業小計"] = float(y_sub)
         row_dict["_yen_小計1"] = float(y_sub1)
+        row_dict["_yen_消耗品費(6%)"] = float(y_shoumou)
+        row_dict["_yen_管理費"] = float(y_kanri)
+        row_dict["_yen_小計2"] = float(y_sub2)
+        row_dict["_yen_小計1+小計2"] = float(y_sub12)
+        row_dict["_yen_諸経費(8%)"] = float(y_shokeihi)
+        row_dict["_yen_合計"] = float(y_total)
+        row_dict["_yen_合計/数量"] = float(y_total_per_qty)
+        row_dict["_yen_調整額"] = float(y_choseigaku)
+        row_dict["_yen_総請求金額/数量"] = float(y_seikyu_per_qty)
 
     @staticmethod
     def _compute_aggregation_bundle(
@@ -6337,6 +7248,7 @@ class DenpyoHubApp:
 
         # (E) 制作伝票（個別Excel）集計
         seizo_sums = defaultdict(lambda: {c: 0.0 for c in SEIZO_COST_COLUMNS})
+        seizo_qty_sums = defaultdict(float)
         for srec in (raw_seizo or []):
             kno = srec.get("管理No", "")
             if not kno:
@@ -6345,6 +7257,7 @@ class DenpyoHubApp:
             seizo_by_kno[kno].append(srec)
             for c in SEIZO_COST_COLUMNS:
                 seizo_sums[kno][c] += to_float(srec.get(c, 0.0), 0.0)
+            seizo_qty_sums[kno] += to_float(srec.get("_制作伝票数量", 0.0), 0.0)
             s_meta = srec.get("_meta", {})
             if kno not in fallback_meta:
                 fallback_meta[kno] = {
@@ -6436,6 +7349,20 @@ class DenpyoHubApp:
                 "材料費計": sz["材料費計"],
                 "設計費": sz["設計費"],
                 "小計1": 0.0,
+                "消耗品費(6%)": 0.0,
+                "重機、運搬費": sz["重機、運搬費"],
+                "車両、交通費": sz["車両、交通費"],
+                "出張費": sz["出張費"],
+                "管理費": 0.0,
+                "小計2": 0.0,
+                "小計1+小計2": 0.0,
+                "諸経費(8%)": 0.0,
+                "合計": 0.0,
+                "合計/数量": 0.0,
+                "調整額": 0.0,
+                "総請求金額": sz["総請求金額"],
+                "総請求金額/数量": 0.0,
+                "_制作伝票数量": seizo_qty_sums[kno],
                 "_has_seizo": has_seizo_flag,
                 "_search_text": search_haystack,
             }
@@ -6462,13 +7389,13 @@ class DenpyoHubApp:
         )
 
     def _get_work_numeric_val(self, row: dict, col: str) -> float:
-        """表示単位（分・時間・金額）と単価レートを反映した作業列および小計1の数値を高速に返す"""
+        """表示単位（分・時間・金額）と単価レートを反映した作業列および派生円算出列の数値を高速に返す"""
         rates_tuple = self._get_rates_tuple()
         if row.get("_rates_key") != rates_tuple:
             self._populate_row_rate_cache(row, rates_tuple)
 
-        if col == "小計1":
-            return row["_yen_小計1"]
+        if col in DERIVED_YEN_COLUMNS:
+            return row.get(f"_yen_{col}", 0.0)
         unit = self.time_unit_var.get()
         if unit == "金額(円)":
             return row.get(f"_yen_{col}", 0.0)
@@ -6518,8 +7445,8 @@ class DenpyoHubApp:
     def _get_cell_display_str(self, row: dict, col: str) -> str:
         """一覧表示上のセル文字列を取得する（視認性向上のため単位付き表示・0はシンプル表示）"""
         unit = self.time_unit_var.get()
-        if col == "小計1":
-            iv = int(round(self._get_work_numeric_val(row, "小計1")))
+        if col in DERIVED_YEN_COLUMNS:
+            iv = int(round(self._get_work_numeric_val(row, col)))
             return f"{iv:,}円" if iv != 0 else "0"
         if col in WORK_CATEGORIES or col == "作業小計":
             val = self._get_work_numeric_val(row, col)
@@ -6540,8 +7467,8 @@ class DenpyoHubApp:
 
     def _get_cell_filter_key(self, row: dict, col: str) -> str:
         """Excel風フィルター用の正規化値（数値列はカンマ無しの表示値、文字はそのまま）"""
-        if col == "小計1":
-            return str(int(round(self._get_work_numeric_val(row, "小計1"))))
+        if col in DERIVED_YEN_COLUMNS:
+            return str(int(round(self._get_work_numeric_val(row, col))))
         if col in WORK_CATEGORIES or col == "作業小計":
             val = self._get_work_numeric_val(row, col)
             unit = self.time_unit_var.get()
@@ -6610,7 +7537,7 @@ class DenpyoHubApp:
 
         num_op = spec.get("num_op", "指定なし")
         if col in NUMERIC_COLUMNS and num_op != "指定なし":
-            if col in WORK_CATEGORIES or col in ("作業小計", "小計1"):
+            if col in RATE_DEPENDENT_COLUMNS:
                 val = self._get_work_numeric_val(r, col)
             else:
                 val = to_float(r.get(col, 0.0), 0.0)
@@ -6724,7 +7651,8 @@ class DenpyoHubApp:
                 totals["作業小計"] += r["作業小計"]
             for c in COST_YEN_COLUMNS:
                 totals[c] += r.get(c, 0.0)
-            totals["小計1"] += r["_yen_小計1"]
+            for c in DERIVED_YEN_COLUMNS:
+                totals[c] += r.get(f"_yen_{c}", 0.0)
 
         if is_yen_mode:
             self.summary_var.set(
@@ -6739,7 +7667,9 @@ class DenpyoHubApp:
                 f"調整用: {int(round(totals['調整用'])):,}円   "
                 f"材料費計: {int(round(totals['材料費計'])):,}円   "
                 f"設計費: {int(round(totals['設計費'])):,}円   |   "
-                f"【小計1: {int(round(totals['小計1'])):,}円】"
+                f"【小計1: {int(round(totals['小計1'])):,}円】   "
+                f"【小計2: {int(round(totals['小計2'])):,}円】   "
+                f"【合計: {int(round(totals['合計'])):,}円】"
             )
         else:
             unit_label = "h" if unit == "時間(分÷60)" else "分"
@@ -6755,7 +7685,9 @@ class DenpyoHubApp:
                 f"【購入品小計: {int(round(totals['購入品小計'])):,}円】   |   "
                 f"材料費計: {int(round(totals['材料費計'])):,}円   "
                 f"設計費: {int(round(totals['設計費'])):,}円   |   "
-                f"【小計1: {int(round(totals['小計1'])):,}円】"
+                f"【小計1: {int(round(totals['小計1'])):,}円】   "
+                f"【小計2: {int(round(totals['小計2'])):,}円】   "
+                f"【合計: {int(round(totals['合計'])):,}円】"
             )
 
         self._refresh_both_panes_sorted()
@@ -6765,7 +7697,7 @@ class DenpyoHubApp:
         if self.link_rows_var.get():
             col = self.sort_col
             desc = self.sort_desc
-            if col in WORK_CATEGORIES or col in ("作業小計", "小計1"):
+            if col in RATE_DEPENDENT_COLUMNS:
                 get_w = self._get_work_numeric_val
                 sort_key = lambda item: get_w(item, col)
             elif col in COST_YEN_COLUMNS:
@@ -6965,6 +7897,10 @@ class DenpyoHubApp:
                 (34, "切断材料", "", "切断材料"),
                 (35, "材料費計", "", "材料費計"),
                 (36, "設計費", "", "設計費"),
+                ("AA17", "重機、運搬費", "", "重機、運搬費"),
+                ("AA18", "車両、交通費", "", "車両、交通費"),
+                ("AA19", "出張費", "", "出張費"),
+                ("AA30", "総請求金額", "", "総請求金額"),
             ]
             for r_no, lbl, sp_txt, key_name in item_defs:
                 u_val, q_val = units.get(r_no, ("", ""))
@@ -7075,12 +8011,36 @@ class DenpyoHubApp:
             on_apply,
         )
 
-    def _prepare_export_data(self):
-        """現在表示中の列順番・アクティブペインの並び順・フィルター結果から出力データを生成する"""
+    def _prepare_export_data(self, include_col_groups: bool = False):
+        """
+        現在表示中の列順番・アクティブペインの並び順・フィルター結果からExcel出力データを生成する。
+        小計1・小計2の内訳列はExcelの列グループ化（デフォルト折りたたみ）用として常に含め、
+        グループ範囲（1始まりの列番号タプル一覧）も併せて算出する。
+        """
         unit = self.time_unit_var.get()
-        src_cols = list(self.visible_columns)
+        export_visible = set(self.visible_set) | set(SUBTOTAL1_DETAIL_COLUMNS) | set(SUBTOTAL2_DETAIL_COLUMNS)
+        src_cols = [c for c in self.column_order if c in export_visible]
         headers = [get_display_column_label(c, unit) for c in src_cols]
         numeric_indices = {i for i, col in enumerate(src_cols) if col in NUMERIC_COLUMNS}
+
+        # 小計1内訳・小計2内訳の連続列区間をそれぞれ1始まりのグループ範囲として抽出
+        col_groups = []
+        for group_col_set in (set(SUBTOTAL1_DETAIL_COLUMNS), set(SUBTOTAL2_DETAIL_COLUMNS)):
+            run_start = None
+            run_end = None
+            for idx_1, col in enumerate(src_cols, 1):
+                if col in group_col_set:
+                    if run_start is None:
+                        run_start = idx_1
+                    run_end = idx_1
+                else:
+                    if run_start is not None:
+                        col_groups.append((run_start, run_end))
+                        run_start = None
+                        run_end = None
+            if run_start is not None:
+                col_groups.append((run_start, run_end))
+
         pane = self._get_active_pane()
         export_source = pane.rows if pane.rows else self.displayed_rows
         rows = []
@@ -7101,11 +8061,12 @@ class DenpyoHubApp:
                 totals["作業小計"] += r["作業小計"]
             for c in COST_YEN_COLUMNS:
                 totals[c] += r.get(c, 0.0)
-            totals["小計1"] += self._get_work_numeric_val(r, "小計1")
+            for c in DERIVED_YEN_COLUMNS:
+                totals[c] += self._get_work_numeric_val(r, c)
 
             row_vals = []
             for col in src_cols:
-                if col in WORK_CATEGORIES or col in ("作業小計", "小計1"):
+                if col in RATE_DEPENDENT_COLUMNS:
                     row_vals.append(self._get_work_numeric_val(r, col))
                 elif col in COST_YEN_COLUMNS:
                     row_vals.append(int(round(r.get(col, 0.0))))
@@ -7117,8 +8078,10 @@ class DenpyoHubApp:
         for idx, col in enumerate(src_cols):
             if idx == 0:
                 totals_row.append(f"合計 ({len(self.displayed_rows)}件)")
-            elif col == "小計1":
-                totals_row.append(int(round(totals["小計1"])))
+            elif col in ("合計/数量", "総請求金額/数量"):
+                totals_row.append("")
+            elif col in DERIVED_YEN_COLUMNS:
+                totals_row.append(int(round(totals[col])))
             elif col in WORK_CATEGORIES or col == "作業小計":
                 if is_yen_mode:
                     totals_row.append(int(round(totals[col])))
@@ -7131,6 +8094,8 @@ class DenpyoHubApp:
             else:
                 totals_row.append("")
 
+        if include_col_groups:
+            return headers, rows, numeric_indices, totals_row, col_groups
         return headers, rows, numeric_indices, totals_row
 
     def open_excel_new_workbook_action(self):
@@ -7139,7 +8104,7 @@ class DenpyoHubApp:
             messagebox.showinfo("出力対象なし", "Excelへ出力するデータがありません。先に集計を実行してください。", parent=self.root)
             return
 
-        headers, rows, numeric_indices, totals_row = self._prepare_export_data()
+        headers, rows, numeric_indices, totals_row, col_groups = self._prepare_export_data(include_col_groups=True)
         protected_snapshot = self.get_protected_source_paths()
         self.status_var.set("Excelを起動して新規ブックにデータを書き込んでいます...")
         try:
@@ -7157,6 +8122,7 @@ class DenpyoHubApp:
                     numeric_indices,
                     totals_row=totals_row,
                     protected_paths=protected_snapshot,
+                    col_groups=col_groups,
                 )
             except Exception as e:
                 err_msg = str(e)
@@ -7190,6 +8156,12 @@ class DenpyoHubApp:
         self._active_job_id += 1
         self.meta_pane.cancel_pending_jobs()
         self.calc_pane.cancel_pending_jobs()
+        if getattr(self, "_progress_hide_job", None) is not None:
+            try:
+                self.root.after_cancel(self._progress_hide_job)
+            except Exception:
+                pass
+            self._progress_hide_job = None
         if getattr(self, "_poll_after_id", None) is not None:
             try:
                 self.root.after_cancel(self._poll_after_id)
